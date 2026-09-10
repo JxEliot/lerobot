@@ -15,7 +15,7 @@
 # limitations under the License.
 
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -34,9 +34,113 @@ from lerobot.processor import (
     make_default_policy_processor_steps,
     make_policy_processor_pipelines,
 )
+from lerobot.processor.relative_action_processor import AbsoluteActionsProcessorStep as BaseAbsoluteActionsProcessorStep
+from lerobot.processor.relative_action_processor import RelativeActionsProcessorStep as BaseRelativeActionsProcessorStep
+from lerobot.lerobot_types import TransitionKey
+from lerobot.utils.constants import ACTION
 from lerobot.utils.constants import OBS_STATE
 
 from .configuration_pi05 import PI05Config
+
+
+def _hat(v: torch.Tensor) -> torch.Tensor:
+    x, y, z = v.unbind(-1)
+    zero = torch.zeros_like(x)
+    return torch.stack((zero, -z, y, z, zero, -x, -y, x, zero), -1).reshape(*v.shape[:-1], 3, 3)
+
+
+def _rotvec_to_matrix(v: torch.Tensor) -> torch.Tensor:
+    theta = torch.linalg.vector_norm(v, dim=-1, keepdim=True)
+    theta2 = theta.square()
+    k = _hat(v)
+    a = torch.where(theta2 < 1e-8, 1 - theta2 / 6 + theta2.square() / 120, torch.sin(theta) / theta.clamp_min(1e-8))
+    b = torch.where(theta2 < 1e-8, 0.5 - theta2 / 24 + theta2.square() / 720, (1 - torch.cos(theta)) / theta2.clamp_min(1e-8))
+    eye = torch.eye(3, dtype=v.dtype, device=v.device).expand_as(k)
+    return eye + a.unsqueeze(-1) * k + b.unsqueeze(-1) * (k @ k)
+
+
+def _matrix_to_rotvec(m: torch.Tensor) -> torch.Tensor:
+    skew = torch.stack((m[..., 2, 1] - m[..., 1, 2], m[..., 0, 2] - m[..., 2, 0], m[..., 1, 0] - m[..., 0, 1]), -1)
+    sin_theta = 0.5 * torch.linalg.vector_norm(skew, dim=-1)
+    cos_theta = ((m.diagonal(dim1=-2, dim2=-1).sum(-1) - 1) * 0.5).clamp(-1, 1)
+    theta = torch.atan2(sin_theta, cos_theta)
+    scale = torch.where(sin_theta < 1e-6, 0.5 + theta.square() / 12, theta / (2 * sin_theta).clamp_min(1e-6))
+    return scale.unsqueeze(-1) * skew
+
+
+def _relative_eef_pose(target: torch.Tensor, current: torch.Tensor) -> torch.Tensor:
+    current_r = _rotvec_to_matrix(current[..., 3:6])
+    target_r = _rotvec_to_matrix(target[..., 3:6])
+    rel_t = (current_r.transpose(-1, -2) @ (target[..., :3] - current[..., :3]).unsqueeze(-1)).squeeze(-1)
+    rel_r = current_r.transpose(-1, -2) @ target_r
+    return torch.cat((rel_t, _matrix_to_rotvec(rel_r)), dim=-1)
+
+
+def _absolute_eef_pose(relative: torch.Tensor, current: torch.Tensor) -> torch.Tensor:
+    current_r = _rotvec_to_matrix(current[..., 3:6])
+    rel_r = _rotvec_to_matrix(relative[..., 3:6])
+    abs_t = current[..., :3] + (current_r @ relative[..., :3].unsqueeze(-1)).squeeze(-1)
+    abs_r = current_r @ rel_r
+    return torch.cat((abs_t, _matrix_to_rotvec(abs_r)), dim=-1)
+
+
+@ProcessorStepRegistry.register("gr00t_eef_relative_actions_processor")
+@dataclass
+class Gr00tEefRelativeActionsProcessorStep(BaseRelativeActionsProcessorStep):
+    """GR00T-compatible dual-arm SE(3) relative action conversion."""
+
+    enabled: bool = True
+    _last_state: torch.Tensor | None = field(default=None, init=False, repr=False)
+
+    def __call__(self, transition: EnvTransition) -> EnvTransition:
+        state = transition.get(TransitionKey.OBSERVATION, {}).get(OBS_STATE)
+        action = transition.get(TransitionKey.ACTION)
+        if state is None:
+            raise ValueError("observation.state is required for GR00T EEF conversion")
+        self._last_state = state
+        if not self.enabled or action is None:
+            return transition
+        converted = action.clone()
+        for a0, s0 in ((0, 18), (6, 24)):
+            current = state[..., s0 : s0 + 6]
+            if action.ndim == 3:
+                current = current.unsqueeze(-2)
+            converted[..., a0 : a0 + 6] = _relative_eef_pose(action[..., a0 : a0 + 6], current)
+        result = transition.copy()
+        result[TransitionKey.ACTION] = converted
+        return result
+
+    def get_config(self) -> dict[str, Any]:
+        return {"enabled": self.enabled}
+
+
+@ProcessorStepRegistry.register("gr00t_eef_absolute_actions_processor")
+@dataclass
+class Gr00tEefAbsoluteActionsProcessorStep(BaseAbsoluteActionsProcessorStep):
+    """Inverse of :class:`Gr00tEefRelativeActionsProcessorStep`."""
+
+    relative_step: Gr00tEefRelativeActionsProcessorStep | None = field(default=None, repr=False)
+    enabled: bool = True
+
+    def __call__(self, transition: EnvTransition) -> EnvTransition:
+        if not self.enabled or self.relative_step is None:
+            return transition
+        state = self.relative_step._last_state
+        action = transition.get(TransitionKey.ACTION)
+        if state is None or action is None:
+            return transition
+        converted = action.clone()
+        for a0, s0 in ((0, 18), (6, 24)):
+            current = state[..., s0 : s0 + 6]
+            if action.ndim == 3:
+                current = current.unsqueeze(-2)
+            converted[..., a0 : a0 + 6] = _absolute_eef_pose(action[..., a0 : a0 + 6], current)
+        result = transition.copy()
+        result[TransitionKey.ACTION] = converted
+        return result
+
+    def get_config(self) -> dict[str, Any]:
+        return {"enabled": self.enabled}
 
 
 @ProcessorStepRegistry.register(name="pi05_prepare_state_tokenizer_processor_step")
@@ -130,10 +234,13 @@ def make_pi05_pre_post_processors(
         A tuple containing the configured pre-processor and post-processor pipelines.
     """
 
-    relative_step = RelativeActionsProcessorStep(
-        enabled=config.use_relative_actions,
+    relative_step = (
+        Gr00tEefRelativeActionsProcessorStep(enabled=True)
+        if config.use_gr00t_eef_relative_actions
+        else RelativeActionsProcessorStep(enabled=config.use_relative_actions,
         exclude_joints=getattr(config, "relative_exclude_joints", []),
         action_names=getattr(config, "action_feature_names", None),
+        )
     )
 
     steps = make_default_policy_processor_steps(config, dataset_stats)
@@ -161,7 +268,9 @@ def make_pi05_pre_post_processors(
 
     output_steps: list[ProcessorStep] = [
         steps.unnormalize,
-        AbsoluteActionsProcessorStep(enabled=config.use_relative_actions, relative_step=relative_step),
+        (Gr00tEefAbsoluteActionsProcessorStep(enabled=True, relative_step=relative_step)
+         if config.use_gr00t_eef_relative_actions
+         else AbsoluteActionsProcessorStep(enabled=config.use_relative_actions, relative_step=relative_step)),
         steps.to_cpu,
     ]
 

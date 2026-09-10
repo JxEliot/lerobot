@@ -66,6 +66,9 @@ class PI05Config(PreTrainedConfig):
 
     # Relative actions: converts absolute actions to relative (relative to state).
     use_relative_actions: bool = False
+    # GR00T-style SE(3) relative EEF conversion. Uses state[18:24]/state[24:30]
+    # as left/right current poses and action[0:6]/action[6:12] as targets.
+    use_gr00t_eef_relative_actions: bool = False
     # Joint names to exclude from relative (kept absolute). Empty list = all dims relative.
     relative_exclude_joints: list[str] = field(default_factory=lambda: ["gripper"])
     # Populated at runtime from dataset metadata by make_policy.
