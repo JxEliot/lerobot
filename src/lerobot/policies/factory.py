@@ -49,6 +49,7 @@ from lerobot.utils.import_utils import _peft_available, require_package
 from .evo1.configuration_evo1 import Evo1Config
 from .groot.configuration_groot import GrootConfig
 from .molmoact2.configuration_molmoact2 import MolmoAct2Config
+from .pi05.configuration_pi05 import PI05Config
 from .pretrained import PreTrainedPolicy
 from .utils import validate_visual_features_consistency
 
@@ -178,7 +179,29 @@ def make_pre_post_processors(
     Raises:
         ValueError: If no processor factory exists for the given policy configuration type.
     """
+    # Pi0.5's saved pipeline may contain the v2.1 dataset fingerprint map.
+    # Fingerprints are strings and are not normalization statistics. Filter
+    # them here, in the policy flow, without changing the source dataset.
+    if isinstance(policy_cfg, PI05Config):
+        dataset_stats = kwargs.get("dataset_stats")
+        if isinstance(dataset_stats, dict):
+            kwargs["dataset_stats"] = {k: v for k, v in dataset_stats.items() if k != "__fingerprints__"}
+
     if pretrained_path:
+        if isinstance(policy_cfg, PI05Config):
+            stats = kwargs.get("dataset_stats")
+            if isinstance(stats, dict):
+                numeric_stats = {k: v for k, v in stats.items() if k != "__fingerprints__"}
+                overrides = dict(kwargs.get("preprocessor_overrides") or {})
+                normalizer = dict(overrides.get("normalizer_processor") or {})
+                normalizer["stats"] = numeric_stats
+                overrides["normalizer_processor"] = normalizer
+                kwargs["preprocessor_overrides"] = overrides
+                post_overrides = dict(kwargs.get("postprocessor_overrides") or {})
+                unnormalizer = dict(post_overrides.get("unnormalizer_processor") or {})
+                unnormalizer["stats"] = numeric_stats
+                post_overrides["unnormalizer_processor"] = unnormalizer
+                kwargs["postprocessor_overrides"] = post_overrides
         if isinstance(policy_cfg, GrootConfig):
             from .groot.processor_groot import make_groot_pre_post_processors_from_pretrained
 
@@ -217,16 +240,37 @@ def make_pre_post_processors(
                 ),
             )
 
+        preprocessor_overrides = dict(kwargs.get("preprocessor_overrides") or {})
+        if isinstance(policy_cfg, PI05Config):
+            tokenizer_cfg = dict(preprocessor_overrides.get("tokenizer_processor") or {})
+            # The base checkpoint processor points to the public Hub model.
+            # Pi0.5 training is intentionally offline, so use the local
+            # tokenizer selected by the policy config instead.
+            tokenizer_cfg["tokenizer_name"] = policy_cfg.text_tokenizer_name
+            preprocessor_overrides["tokenizer_processor"] = tokenizer_cfg
+
         preprocessor = PolicyProcessorPipeline.from_pretrained(
             pretrained_model_name_or_path=pretrained_path,
             config_filename=kwargs.get(
                 "preprocessor_config_filename", f"{POLICY_PREPROCESSOR_DEFAULT_NAME}.json"
             ),
-            overrides=kwargs.get("preprocessor_overrides", {}),
+            overrides=preprocessor_overrides,
             to_transition=batch_to_transition,
             to_output=transition_to_batch,
             revision=pretrained_revision,
         )
+        if isinstance(policy_cfg, PI05Config) and policy_cfg.use_gr00t_eef_relative_actions:
+            from .pi05.processor_pi05 import Gr00tEefRelativeActionsProcessorStep
+            # The base Pi0.5 processor is shipped with relative actions off.
+            # Replace that step at runtime so training consumes the same
+            # GR00T-compatible SE(3) relative actions used by the dataset
+            # statistics; no checkpoint or dataset JSON is modified.
+            preprocessor.steps = [
+                Gr00tEefRelativeActionsProcessorStep(enabled=True)
+                if step.__class__.__name__ in {"RelativeActionsProcessorStep", "Gr00tEefRelativeActionsProcessorStep"}
+                else step
+                for step in preprocessor.steps
+            ]
         postprocessor = PolicyProcessorPipeline.from_pretrained(
             pretrained_model_name_or_path=pretrained_path,
             config_filename=kwargs.get(

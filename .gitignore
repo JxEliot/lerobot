@@ -176,3 +176,14 @@ outputs/
 *.urdf
 *.xml
 *.part
+
+# Seer training weights and generated inference artifacts
+checkpoints/
+checkpoint/
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+/pi05_finetune/inference_results/
+*.before_*
+*.codex-backup-*

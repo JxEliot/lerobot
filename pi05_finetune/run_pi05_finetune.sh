@@ -18,7 +18,10 @@ case "${MODE}" in
   full)
     DEFAULT_STEPS=8000
     DEFAULT_BATCH=64
-    DEFAULT_SAVE_FREQ=2000
+    # Full Pi0.5 checkpoints are very large (~23 GiB each). Save only the
+    # final checkpoint by default; override SAVE_FREQ when periodic recovery
+    # points are needed.
+    DEFAULT_SAVE_FREQ=0
     ;;
   *)
     echo "Usage: $0 [check|smoke|full] [steps] [batch-per-gpu] [save-freq]" >&2
@@ -29,14 +32,17 @@ esac
 STEPS="${2:-${STEPS:-${DEFAULT_STEPS}}}"
 BATCH_SIZE="${3:-${BATCH_SIZE:-${DEFAULT_BATCH}}}"
 SAVE_FREQ="${4:-${SAVE_FREQ:-${DEFAULT_SAVE_FREQ}}}"
+# Keep only the newest checkpoints to avoid storing multiple ~23 GiB full
+# Pi0.5 copies. Set 0 to disable automatic cleanup.
+KEEP_CHECKPOINTS="${KEEP_CHECKPOINTS:-2}"
 
-LEROBOT_ROOT="${LEROBOT_ROOT:-/mnt/cfs/vyi1fr/usr/jixiang/lerobot}"
+LEROBOT_ROOT="${LEROBOT_ROOT:-/mnt/cfs/usr/jixiang/vla_learning/lerobot}"
 VENV="${VENV:-/root/venvs/lerobot-pi05}"
-DATASET_ROOT="${DATASET_ROOT:-/mnt/cfs/vyi1fr/usr/jixiang/Isaac-GR00T/seer_robot/datasets/pick_and_place_lerobotv2/pick_and_place_v3_pi05_gr00t_eef}"
-MODEL_ROOT="${MODEL_ROOT:-/mnt/cfs/vyi1fr/usr/jixiang/hf_models/pi05_base_local}"
-TOKENIZER_ROOT="${TOKENIZER_ROOT:-/mnt/cfs/vyi1fr/usr/jixiang/hf_models/paligemma-3b-pt-224-tokenizer}"
-OUTPUT_BASE="${OUTPUT_BASE:-/mnt/cfs/vyi1fr/usr/jixiang/lerobot/pi05_finetune/checkpoints}"
-DATASET_REPO_ID="${DATASET_REPO_ID:-seer_robot/pick_and_place_v3}"
+DATASET_ROOT="${DATASET_ROOT:-/mnt/cfs/usr/jixiang/train_datasets/lerobot_ee_v21}"
+MODEL_ROOT="${MODEL_ROOT:-/mnt/cfs/usr/jixiang/hf_models/pi05_base}"
+TOKENIZER_ROOT="${TOKENIZER_ROOT:-/mnt/cfs/usr/jixiang/hf_models/paligemma-3b-pt-224-tokenizer}"
+OUTPUT_BASE="${OUTPUT_BASE:-/mnt/cfs/usr/jixiang/vla_learning/lerobot/pi05_finetune/checkpoints}"
+DATASET_REPO_ID="${DATASET_REPO_ID:-seer_robot/ee_v21}"
 NUM_GPUS="${NUM_GPUS:-2}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
 GRAD_ACCUM_STEPS="${GRAD_ACCUM_STEPS:-1}"
@@ -46,11 +52,15 @@ N_ACTION_STEPS="${N_ACTION_STEPS:-10}"
 RTC_TRAIN_MAX_DELAY="${RTC_TRAIN_MAX_DELAY:-10}"
 WANDB_ENABLE="${WANDB_ENABLE:-true}"
 WANDB_PROJECT="${WANDB_PROJECT:-pi05-pick-and-place}"
+# Checkpoints are always written only to OUTPUT_BASE/RUN_OUTPUT.  This flag
+# prevents the training code from publishing resume artifacts to a Hub/W&B
+# artifact store; W&B receives scalar metrics only.
+WANDB_DISABLE_ARTIFACT="${WANDB_DISABLE_ARTIFACT:-true}"
 RESUME_FROM="${RESUME_FROM:-}"
 
 export PATH="${VENV}/bin:${PATH}"
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
-export HF_HOME="${HF_HOME:-/mnt/cfs/vyi1fr/usr/jixiang/hf_models/hub}"
+export HF_HOME="${HF_HOME:-/mnt/cfs/usr/jixiang/hf_models/hub}"
 export HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}"
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
@@ -91,8 +101,8 @@ for key in ("observation.state", "action"):
     if key not in stats or not {"q01", "q99"}.issubset(stats[key]):
         raise SystemExit(f"Missing Pi0.5 quantile statistics for: {key}")
 
-state_dim = features["observation.state"]["shape"][0]
-action_dim = features["action"]["shape"][0]
+state_dim = 30 if info.get("codebase_version") == "v2.1" else features["observation.state"]["shape"][0]
+action_dim = 14 if info.get("codebase_version") == "v2.1" else features["action"]["shape"][0]
 if state_dim > 32 or action_dim > 32:
     raise SystemExit(f"Pi0.5 supports at most 32 dims; got state={state_dim}, action={action_dim}")
 
@@ -159,6 +169,7 @@ COMMON_ARGS=(
   "--accelerator.gradient_accumulation.steps=${GRAD_ACCUM_STEPS}"
   "--wandb.enable=${WANDB_ENABLE}"
   "--wandb.project=${WANDB_PROJECT}"
+  "--wandb.disable_artifact=${WANDB_DISABLE_ARTIFACT}"
 )
 
 if [[ -n "${RESUME_FROM}" ]]; then
@@ -198,9 +209,19 @@ echo "  effective batch: ${EFFECTIVE_BATCH}"
 echo "  steps:           ${STEPS}"
 echo "  RTC max delay:   ${RTC_TRAIN_MAX_DELAY}"
 
-exec "${VENV}/bin/torchrun" \
+"${VENV}/bin/torchrun" \
   --standalone \
   --nproc-per-node="${NUM_GPUS}" \
   "${VENV}/bin/lerobot-train" \
   "${POLICY_ARGS[@]}" \
   "${COMMON_ARGS[@]}"
+
+if [[ "${KEEP_CHECKPOINTS}" =~ ^[1-9][0-9]*$ ]]; then
+  mapfile -t checkpoint_dirs < <(find "${RUN_OUTPUT}/checkpoints" -mindepth 1 -maxdepth 1 -type d -name '[0-9]*' -printf '%f\n' 2>/dev/null | sort -n)
+  if (( ${#checkpoint_dirs[@]} > KEEP_CHECKPOINTS )); then
+    for old in "${checkpoint_dirs[@]:0:${#checkpoint_dirs[@]}-KEEP_CHECKPOINTS}"; do
+      echo "Removing old checkpoint: ${RUN_OUTPUT}/checkpoints/${old}"
+      rm -rf -- "${RUN_OUTPUT}/checkpoints/${old}"
+    done
+  fi
+fi

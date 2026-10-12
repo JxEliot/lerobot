@@ -19,6 +19,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from copy import deepcopy
 
 import datasets
 import torch
@@ -146,9 +147,21 @@ class DatasetReader(BaseDatasetReader):
                 (``"m"`` or ``"mm"``). Defaults to ``"mm"``.
         """
         self._meta = meta
+        # Keep the on-disk v2.1 schema for parquet loading even when metadata
+        # is exposed to policies in the compact Pi0.5 representation.
+        self._storage_features = deepcopy(getattr(meta, "_v21_raw_features", meta.features))
         self.root = root
         self.episodes = resolve_episode_indices(episodes, meta.total_episodes)
         self._tolerance_s = tolerance_s
+        if getattr(meta.info, "codebase_version", None) == "v2.1":
+            # v2.1 MP4s are timestamped at frame centers (first frame is
+            # commonly 1/fps), while parquet timestamps may start at zero.
+            # Use one frame period as the read-side tolerance only; source
+            # files and synchronization metadata remain unchanged.
+            # torchcodec rejects ``distance >= tolerance``; use a tiny margin
+            # above one frame period so an exact 50 ms frame offset remains
+            # readable at 20 Hz.
+            self._tolerance_s = max(tolerance_s, 1.0 / meta.fps + 1e-4)
         self._video_backend = video_backend
         self.set_image_transforms(image_transforms)
         self._return_uint8 = return_uint8
@@ -224,7 +237,7 @@ class DatasetReader(BaseDatasetReader):
 
     def _load_hf_dataset(self) -> datasets.Dataset:
         """hf_dataset contains all the observations, states, actions, rewards, etc."""
-        features = get_hf_features_from_features(self._meta.features)
+        features = get_hf_features_from_features(self._storage_features)
         self._validate_language_columns_declared(features)
         hf_dataset = load_nested_dataset(self.root / "data", features=features, episodes=self.episodes)
         hf_dataset.set_transform(hf_transform_to_torch)
@@ -373,6 +386,33 @@ class DatasetReader(BaseDatasetReader):
             result[key] = torch.stack(self._column_view(key)[relative_indices][key])
         return result
 
+    @staticmethod
+    def _quat_to_rotvec(q: torch.Tensor) -> torch.Tensor:
+        # Stored order is xyz + qx,qy,qz,qw.
+        xyz, quat = q[..., :3], q[..., 3:7]
+        quat = quat / quat.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+        x, y, z, w = quat.unbind(-1)
+        angle = 2.0 * torch.atan2(torch.sqrt((x*x + y*y + z*z).clamp_min(0)), w.clamp_min(1e-8))
+        scale = angle / torch.sqrt((x*x + y*y + z*z).clamp_min(1e-8))
+        scale = torch.where((x*x + y*y + z*z) < 1e-8, torch.full_like(scale, 2.0), scale)
+        return torch.cat((xyz, torch.stack((x, y, z), -1) * scale.unsqueeze(-1)), -1)
+
+    @classmethod
+    def _adapt_seer_v21(cls, result: dict) -> dict:
+        """Expose the shared SEER v2.1 data in Pi/LeRobot model dimensions."""
+        state = result.get("observation.state")
+        if state is not None and state.shape[-1] == 64:
+            state = torch.cat((state[..., :16], state[..., 62:64],
+                               cls._quat_to_rotvec(state[..., 48:55]),
+                               cls._quat_to_rotvec(state[..., 55:62])), dim=-1)
+            result["observation.state"] = state
+        action = result.get("action")
+        if action is not None and action.shape[-1] == 16:
+            result["action"] = torch.cat((cls._quat_to_rotvec(action[..., :7]),
+                                           cls._quat_to_rotvec(action[..., 7:14]),
+                                           action[..., 14:16]), dim=-1)
+        return result
+
     def _query_videos(self, query_timestamps: dict[str, list[float]], ep_idx: int) -> dict[str, torch.Tensor]:
         """Note: When using data workers (e.g. DataLoader with num_workers>0), do not call this function
         in the main process (e.g. by using a second Dataloader with num_workers=0). It will result in a
@@ -448,6 +488,11 @@ class DatasetReader(BaseDatasetReader):
                 if cam in self._meta.depth_keys:
                     continue
                 item[cam] = self._image_transforms(item[cam])
+
+        if getattr(self._meta.info, "codebase_version", None) == "v2.1":
+            adapted = self._adapt_seer_v21(item)
+            item["observation.state"] = adapted["observation.state"]
+            item["action"] = adapted["action"]
 
         # Convert depth features to the output unit.
         for key, stored_unit in self._image_depth_units.items():

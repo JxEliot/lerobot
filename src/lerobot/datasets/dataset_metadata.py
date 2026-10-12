@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import contextlib
+import json
 import logging
 from collections.abc import Callable, Iterable
 from copy import deepcopy
@@ -214,10 +215,71 @@ class LeRobotDatasetMetadata:
 
     def _load_metadata(self):
         self.info = load_info(self.root)
+        if self.info.codebase_version == "v2.1":
+            self._load_v21_metadata()
+            return
         check_version_compatibility(self.repo_id, self._version, CODEBASE_VERSION)
         self.tasks = load_tasks(self.root) if self.total_tasks > 0 else None
         self.episodes = load_episodes(self.root) if self.total_episodes > 0 else None
         self.stats = load_stats(self.root)
+
+    def _load_v21_metadata(self) -> None:
+        """Load v2.1 JSONL metadata read-only without converting the dataset."""
+        from datasets import Dataset
+        rows, offset = [], 0
+        with (self.root / "meta/episodes.jsonl").open() as f:
+            for ep_idx, line in enumerate(f):
+                raw = json.loads(line)
+                idx, length = int(raw.get("episode_index", ep_idx)), int(raw.get("length", 0))
+                row = {"episode_index": idx, "dataset_from_index": offset,
+                       "dataset_to_index": offset + length, "length": length,
+                       "data/chunk_index": 0, "data/file_index": idx}
+                for key, feature in self.info.features.items():
+                    if feature.get("dtype") == "video":
+                        row[f"videos/{key}/chunk_index"] = 0
+                        row[f"videos/{key}/file_index"] = idx
+                        row[f"videos/{key}/from_timestamp"] = 0.0
+                rows.append(row); offset += length
+        self.episodes = Dataset.from_list(rows) if rows else None
+        tasks_path = self.root / "meta/tasks.jsonl"
+        if tasks_path.exists():
+            task_rows = [json.loads(line) for line in tasks_path.open()]
+            self.tasks = pd.DataFrame(task_rows).set_index("task") if task_rows else None
+        else:
+            self.tasks = None
+        self._adapt_v21_features_and_stats()
+
+    def _adapt_v21_features_and_stats(self) -> None:
+        """Expose compact 30/14-dim SEER features and runtime statistics."""
+        import numpy as np
+        import pyarrow.parquet as pq
+        from scipy.spatial.transform import Rotation
+
+        raw_features = self.info.features
+        self._v21_raw_features = deepcopy(raw_features)
+        for key, dim in (("observation.state", 30), ("action", 14)):
+            if key in raw_features:
+                raw_features[key] = dict(raw_features[key]); raw_features[key]["shape"] = (dim,)
+        stats = load_stats(self.root) or {}
+        paths = sorted((self.root / "data").glob("**/episode_*.parquet"))
+        if paths:
+            table = pq.read_table(paths)
+            state = np.asarray(table["observation.state"].to_pylist(), dtype=np.float32)
+            action = np.asarray(table["action"].to_pylist(), dtype=np.float32)
+            def pose(v):
+                r = Rotation.from_quat(v[..., 3:7]); return np.concatenate((v[..., :3], r.as_rotvec()), -1)
+            state30 = np.concatenate((state[:, :16], state[:, 62:64], pose(state[:, 48:55]), pose(state[:, 55:62])), -1)
+            target = np.concatenate((pose(action[:, :7]), pose(action[:, 7:14]), action[:, 14:16]), -1)
+            cur_l, cur_r = state30[:, 18:24], state30[:, 24:30]
+            rel = target.copy()
+            for a, c in ((0, cur_l), (6, cur_r)):
+                rc = Rotation.from_rotvec(c[:, 3:]); rt = Rotation.from_rotvec(target[:, a+3:a+6])
+                rel[:, a:a+3] = np.einsum("nij,nj->ni", rc.inv().as_matrix(), target[:, a:a+3] - c[:, :3])
+                rel[:, a+3:a+6] = (rc.inv() * rt).as_rotvec()
+            def st(x):
+                return {k: getattr(np, k)(x, axis=0).astype(np.float32).tolist() for k in ("min", "max", "mean", "std")} | {"q01": np.quantile(x,.01,axis=0).astype(np.float32).tolist(), "q99": np.quantile(x,.99,axis=0).astype(np.float32).tolist()}
+            stats["observation.state"], stats["action"] = st(state30), st(rel)
+        self.stats = stats
 
     def ensure_readable(self) -> None:
         """Guarantee metadata is fully loaded for read operations.
@@ -327,6 +389,8 @@ class LeRobotDatasetMetadata:
                 f"Episode index {ep_index} out of range. Episodes: {len(self.episodes) if self.episodes else 0}"
             )
         ep = self.episodes[ep_index]
+        if self.info.codebase_version == "v2.1":
+            return Path(f"data/chunk-000/episode_{int(ep['episode_index']):06d}.parquet")
         chunk_idx = ep["data/chunk_index"]
         file_idx = ep["data/file_index"]
         fpath = self.data_path.format(chunk_index=chunk_idx, file_index=file_idx)
@@ -353,6 +417,8 @@ class LeRobotDatasetMetadata:
                 f"Episode index {ep_index} out of range. Episodes: {len(self.episodes) if self.episodes else 0}"
             )
         ep = self.episodes[ep_index]
+        if self.info.codebase_version == "v2.1":
+            return Path(f"videos/chunk-000/{vid_key}/episode_{int(ep['episode_index']):06d}.mp4")
         chunk_idx = ep[f"videos/{vid_key}/chunk_index"]
         file_idx = ep[f"videos/{vid_key}/file_index"]
         fpath = self.video_path.format(video_key=vid_key, chunk_index=chunk_idx, file_index=file_idx)
