@@ -16,6 +16,7 @@
 
 import builtins
 import logging
+import time
 from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypedDict, Unpack
@@ -337,11 +338,20 @@ class PaliGemmaWithExpertModel(
             adarms_cond_dim=action_expert_config.width if use_adarms[1] else None,
         )
 
+        started = time.perf_counter()
+        print("[model-init] constructing PaliGemma on CPU", flush=True)
         self.paligemma = PaliGemmaForConditionalGenerationWithPiGemma(config=vlm_config_hf)
+        print(f"[model-init] PaliGemma constructed in {time.perf_counter() - started:.2f}s", flush=True)
+        started = time.perf_counter()
+        print("[model-init] constructing action expert on CPU", flush=True)
         self.gemma_expert = PiGemmaForCausalLM(config=action_expert_config_hf)
+        print(f"[model-init] action expert constructed in {time.perf_counter() - started:.2f}s", flush=True)
         self.gemma_expert.model.embed_tokens = None
 
+        started = time.perf_counter()
+        print(f"[model-init] converting parameter precision to {precision}", flush=True)
         self.to_bfloat16_for_selected_params(precision)
+        print(f"[model-init] precision conversion took {time.perf_counter() - started:.2f}s", flush=True)
         self._set_requires_grad()
 
     def to_bfloat16_for_selected_params(self, precision: Literal["bfloat16", "float32"] = "bfloat16"):
@@ -963,7 +973,10 @@ class PI05Policy(PreTrainedPolicy):
 
         # Initialize model without loading weights
         # Check if dataset_stats were provided in kwargs
+        started = time.perf_counter()
+        print(f"[model-load] constructing model; torch_threads={torch.get_num_threads()}", flush=True)
         model = cls(config, **kwargs)
+        print(f"[model-load] construction/device setup took {time.perf_counter() - started:.2f}s", flush=True)
 
         # Load state dict (expects keys with "model." prefix)
         try:
@@ -984,7 +997,10 @@ class PI05Policy(PreTrainedPolicy):
                 )
                 from safetensors.torch import load_file
 
+                started = time.perf_counter()
+                print(f"[model-load] mapping checkpoint: {resolved_file}", flush=True)
                 original_state_dict = load_file(resolved_file)
+                print(f"[model-load] checkpoint mapping took {time.perf_counter() - started:.2f}s (tensor reads may be deferred)", flush=True)
                 print("✓ Loaded state dict from model.safetensors")
             except Exception as e:
                 print(f"Could not load state dict from remote files: {e}")
@@ -1012,7 +1028,10 @@ class PI05Policy(PreTrainedPolicy):
             remapped_state_dict = model._prepare_pretrained_state_dict(remapped_state_dict)
 
             # Load the remapped state dict into the model
+            started = time.perf_counter()
+            print("[model-load] reading/copying checkpoint tensors into model", flush=True)
             missing_keys, unexpected_keys = model.load_state_dict(remapped_state_dict, strict=strict)
+            print(f"[model-load] tensor loading took {time.perf_counter() - started:.2f}s", flush=True)
 
             if missing_keys:
                 print(f"Missing keys when loading state dict: {len(missing_keys)} keys")

@@ -390,12 +390,19 @@ class DatasetReader(BaseDatasetReader):
     def _quat_to_rotvec(q: torch.Tensor) -> torch.Tensor:
         # Stored order is xyz + qx,qy,qz,qw.
         xyz, quat = q[..., :3], q[..., 3:7]
-        quat = quat / quat.norm(dim=-1, keepdim=True).clamp_min(1e-8)
-        x, y, z, w = quat.unbind(-1)
-        angle = 2.0 * torch.atan2(torch.sqrt((x*x + y*y + z*z).clamp_min(0)), w.clamp_min(1e-8))
-        scale = angle / torch.sqrt((x*x + y*y + z*z).clamp_min(1e-8))
-        scale = torch.where((x*x + y*y + z*z) < 1e-8, torch.full_like(scale, 2.0), scale)
-        return torch.cat((xyz, torch.stack((x, y, z), -1) * scale.unsqueeze(-1)), -1)
+        norm = quat.norm(dim=-1, keepdim=True)
+        if not torch.isfinite(quat).all() or torch.any(norm < 1e-8):
+            raise ValueError("Expected finite, nonzero Seer pose quaternions")
+        quat = quat / norm
+        # q and -q encode the same rotation. Choose the shortest rotation;
+        # clamping a negative w changes the rotation instead of its sign.
+        quat = torch.where(quat[..., 3:4] < 0, -quat, quat)
+        vector, w = quat[..., :3], quat[..., 3:4]
+        sin_half = vector.norm(dim=-1, keepdim=True)
+        angle = 2.0 * torch.atan2(sin_half, w)
+        scale = torch.where(sin_half < 1e-8, torch.full_like(sin_half, 2.0),
+                            angle / sin_half.clamp_min(1e-8))
+        return torch.cat((xyz, vector * scale), dim=-1)
 
     @classmethod
     def _adapt_seer_v21(cls, result: dict) -> dict:

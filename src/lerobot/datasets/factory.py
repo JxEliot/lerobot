@@ -15,6 +15,7 @@
 # limitations under the License.
 import logging
 import math
+from copy import deepcopy
 from pprint import pformat
 
 import torch
@@ -206,6 +207,9 @@ def make_train_eval_datasets(
     full_dataset = make_dataset(cfg)
 
     if cfg.dataset.eval_split == 0.0:
+        if not cfg.resume:
+            from .seer_pi05_stats import apply_seer_pi05_training_stats
+            apply_seer_pi05_training_stats(full_dataset, cfg.trainable_config)
         return full_dataset, None
 
     base_episodes = (
@@ -277,4 +281,9 @@ def make_train_eval_datasets(
                 for stats_type, stats in IMAGENET_STATS.items():
                     ds.meta.stats[key][stats_type] = torch.tensor(stats, dtype=torch.float32)
 
+    if not cfg.resume:
+        from .seer_pi05_stats import apply_seer_pi05_training_stats
+        apply_seer_pi05_training_stats(train_dataset, cfg.trainable_config)
+        # Validation uses only training statistics; never fit on held-out episodes.
+        eval_dataset.meta.stats = deepcopy(train_dataset.meta.stats)
     return train_dataset, eval_dataset

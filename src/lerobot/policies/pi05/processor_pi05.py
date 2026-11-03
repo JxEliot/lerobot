@@ -60,12 +60,32 @@ def _rotvec_to_matrix(v: torch.Tensor) -> torch.Tensor:
 
 
 def _matrix_to_rotvec(m: torch.Tensor) -> torch.Tensor:
-    skew = torch.stack((m[..., 2, 1] - m[..., 1, 2], m[..., 0, 2] - m[..., 2, 0], m[..., 1, 0] - m[..., 0, 1]), -1)
-    sin_theta = 0.5 * torch.linalg.vector_norm(skew, dim=-1)
-    cos_theta = ((m.diagonal(dim1=-2, dim2=-1).sum(-1) - 1) * 0.5).clamp(-1, 1)
-    theta = torch.atan2(sin_theta, cos_theta)
-    scale = torch.where(sin_theta < 1e-6, 0.5 + theta.square() / 12, theta / (2 * sin_theta).clamp_min(1e-6))
-    return scale.unsqueeze(-1) * skew
+    # Select the largest quaternion component to avoid dividing by sin(theta)
+    # near pi, where the matrix skew approaches zero.
+    m00, m01, m02 = m[..., 0, 0], m[..., 0, 1], m[..., 0, 2]
+    m10, m11, m12 = m[..., 1, 0], m[..., 1, 1], m[..., 1, 2]
+    m20, m21, m22 = m[..., 2, 0], m[..., 2, 1], m[..., 2, 2]
+    squared = torch.stack((1 + m00 + m11 + m22,
+                           1 + m00 - m11 - m22,
+                           1 - m00 + m11 - m22,
+                           1 - m00 - m11 + m22), dim=-1)
+    magnitudes = torch.sqrt(squared.clamp_min(0))
+    candidates = torch.stack((
+        torch.stack((squared[..., 0], m21 - m12, m02 - m20, m10 - m01), -1),
+        torch.stack((m21 - m12, squared[..., 1], m10 + m01, m02 + m20), -1),
+        torch.stack((m02 - m20, m10 + m01, squared[..., 2], m12 + m21), -1),
+        torch.stack((m10 - m01, m02 + m20, m12 + m21, squared[..., 3]), -1),
+    ), dim=-2) / (2 * magnitudes.clamp_min(0.1).unsqueeze(-1))
+    selected = magnitudes.argmax(-1)
+    q = candidates.gather(-2, selected[..., None, None].expand(*selected.shape, 1, 4)).squeeze(-2)
+    q = q / q.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+    q = torch.where(q[..., :1] < 0, -q, q)
+    vector = q[..., 1:]
+    sin_half = vector.norm(dim=-1, keepdim=True)
+    theta = 2 * torch.atan2(sin_half, q[..., :1])
+    scale = torch.where(sin_half < 1e-8, torch.full_like(sin_half, 2.0),
+                        theta / sin_half.clamp_min(1e-8))
+    return vector * scale
 
 
 def _relative_eef_pose(target: torch.Tensor, current: torch.Tensor) -> torch.Tensor:

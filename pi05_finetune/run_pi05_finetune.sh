@@ -16,7 +16,7 @@ case "${MODE}" in
     DEFAULT_SAVE_FREQ=2
     ;;
   full)
-    DEFAULT_STEPS=8000
+    DEFAULT_STEPS=10000
     DEFAULT_BATCH=64
     # Full Pi0.5 checkpoints are very large (~23 GiB each). Save only the
     # final checkpoint by default; override SAVE_FREQ when periodic recovery
@@ -50,6 +50,10 @@ N_ACTION_STEPS="${N_ACTION_STEPS:-10}"
 # Train hard action-prefix conditioning for RTC. At 20 FPS, 10 steps covers
 # up to 0.5 seconds of controller/inference delay.
 RTC_TRAIN_MAX_DELAY="${RTC_TRAIN_MAX_DELAY:-10}"
+# Mild photometric augmentation shared by RTC and no-RTC fresh training runs.
+# Keep spatial transforms disabled to preserve image/action correspondence.
+IMAGE_AUGMENTATION="${IMAGE_AUGMENTATION:-true}"
+IMAGE_TRANSFORMS='{"brightness":{"weight":1.0,"type":"ColorJitter","kwargs":{"brightness":[0.9,1.1]}},"contrast":{"weight":1.0,"type":"ColorJitter","kwargs":{"contrast":[0.9,1.1]}},"sharpness":{"weight":1.0,"type":"SharpnessJitter","kwargs":{"sharpness":[0.8,1.2]}}}'
 WANDB_ENABLE="${WANDB_ENABLE:-true}"
 WANDB_PROJECT="${WANDB_PROJECT:-pi05-pick-and-place}"
 # Checkpoints are always written only to OUTPUT_BASE/RUN_OUTPUT.  This flag
@@ -82,15 +86,26 @@ fail() {
 [[ -f "${DATASET_ROOT}/meta/info.json" ]] || fail "Dataset metadata not found: ${DATASET_ROOT}/meta/info.json"
 [[ -f "${DATASET_ROOT}/meta/stats.json" ]] || fail "Dataset statistics not found: ${DATASET_ROOT}/meta/stats.json"
 
-"${VENV}/bin/python" - "${DATASET_ROOT}" "${TOKENIZER_ROOT}" "${NUM_GPUS}" <<'PY'
+"${VENV}/bin/python" - "${DATASET_ROOT}" "${TOKENIZER_ROOT}" "${NUM_GPUS}" "${IMAGE_AUGMENTATION}" "${IMAGE_TRANSFORMS}" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 import torch
 from transformers import AutoTokenizer
+import draccus
+from lerobot.transforms.transforms import ImageTransforms, ImageTransformsConfig
 
 dataset_root, tokenizer_root, requested_gpus = sys.argv[1], sys.argv[2], int(sys.argv[3])
+image_cfg = draccus.parse(ImageTransformsConfig, args=[
+    f"--enable={sys.argv[4]}", "--max_num_transforms=2",
+    "--random_order=false", f"--tfs={sys.argv[5]}",
+])
+# Validate the exact training CLI config and its transforms without loading a model.
+image = torch.randint(0, 256, (3, 224, 224), dtype=torch.uint8)
+augmented = ImageTransforms(image_cfg)(image)
+assert augmented.shape == image.shape and augmented.dtype == image.dtype
+print(f"Image augmentation: enable={image_cfg.enable}, max_num_transforms=2, transforms={list(image_cfg.tfs)}")
 info = json.loads((Path(dataset_root) / "meta/info.json").read_text())
 stats = json.loads((Path(dataset_root) / "meta/stats.json").read_text())
 features = info["features"]
@@ -182,6 +197,10 @@ else
     "--dataset.repo_id=${DATASET_REPO_ID}"
     "--dataset.root=${DATASET_ROOT}"
     "--dataset.return_uint8=true"
+    "--dataset.image_transforms.enable=${IMAGE_AUGMENTATION}"
+    "--dataset.image_transforms.max_num_transforms=2"
+    "--dataset.image_transforms.random_order=false"
+    "--dataset.image_transforms.tfs=${IMAGE_TRANSFORMS}"
     "--policy.type=pi05"
     "--policy.pretrained_path=${MODEL_ROOT}"
     "--policy.text_tokenizer_name=${TOKENIZER_ROOT}"
@@ -208,6 +227,11 @@ echo "  grad accumulation: ${GRAD_ACCUM_STEPS}"
 echo "  effective batch: ${EFFECTIVE_BATCH}"
 echo "  steps:           ${STEPS}"
 echo "  RTC max delay:   ${RTC_TRAIN_MAX_DELAY}"
+if [[ -n "${RESUME_FROM}" ]]; then
+  echo "  image augmentation: restored from resume training config"
+else
+  echo "  image augmentation: ${IMAGE_AUGMENTATION}; brightness/contrast=0.9-1.1, sharpness=0.8-1.2; max 2 per image"
+fi
 
 "${VENV}/bin/torchrun" \
   --standalone \

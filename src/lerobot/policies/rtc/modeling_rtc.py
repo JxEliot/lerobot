@@ -215,8 +215,8 @@ class RTCProcessor:
         )
 
         with torch.enable_grad():
-            v_t = original_denoise_step_partial(x_t)
             x_t.requires_grad_(True)
+            v_t = original_denoise_step_partial(x_t)
 
             x1_t = x_t - time * v_t  # noqa: N806
             err = (prev_chunk_left_over - x1_t) * weights
@@ -231,7 +231,7 @@ class RTCProcessor:
         guidance_weight = torch.nan_to_num(c * inv_r2, posinf=max_guidance_weight)
         guidance_weight = torch.minimum(guidance_weight, max_guidance_weight)
 
-        result = v_t - guidance_weight * correction
+        result = (v_t - guidance_weight * correction).detach()
 
         # Remove the batch dimension if it was added
         if squeezed:

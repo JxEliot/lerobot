@@ -33,15 +33,25 @@ class Request(BaseModel):
 
 
 class PI05Server:
-    def __init__(self, checkpoint: str, dataset_root: str, device: str, action_horizon: int):
+    def __init__(self, checkpoint: str, dataset_root: str, device: str, action_horizon: int, execution_horizon: int = 15, rtc_mode: str = "trained"):
         from lerobot.datasets import LeRobotDataset
         self.server_info = {"checkpoint": checkpoint, "device": device}
         self.device = torch.device(device)
+        startup_started = time.perf_counter()
+        started = time.perf_counter()
+        print(f"[startup] loading dataset metadata/sample: {dataset_root}", flush=True)
         self.dataset = LeRobotDataset(repo_id="seer_robot/ee_v21", root=dataset_root, episodes=[0])
+        print(f"[startup] dataset loaded in {time.perf_counter() - started:.2f}s", flush=True)
+        started = time.perf_counter()
+        print(f"[startup] loading policy: {checkpoint}", flush=True)
         self.policy = PI05Policy.from_pretrained(checkpoint).to(self.device).eval()
+        print(f"[startup] policy loaded in {time.perf_counter() - started:.2f}s", flush=True)
         self.server_info["num_inference_steps"] = self.policy.config.num_inference_steps
         training_max_delay = int(getattr(self.policy.config, "rtc_training_max_delay", 0))
-        if training_max_delay < 10:
+        if rtc_mode not in {"trained", "guided", "off"}:
+            raise ValueError("rtc_mode must be trained, guided or off")
+        self.rtc_mode = rtc_mode
+        if rtc_mode == "trained" and training_max_delay < 10:
             raise ValueError(
                 "trained PI05 RTC requires checkpoint rtc_training_max_delay >= 10, "
                 f"got {training_max_delay}"
@@ -50,12 +60,16 @@ class PI05Server:
             raise ValueError(
                 f"expected the Seer PI05 checkpoint chunk_size=50, got {self.policy.config.chunk_size}"
             )
+        self.training_max_delay = training_max_delay
+        if not (training_max_delay if rtc_mode == "trained" else 1) <= execution_horizon <= (self.policy.config.chunk_size - training_max_delay if rtc_mode == "trained" else self.policy.config.chunk_size):
+            raise ValueError("execution_horizon is outside the trained RTC range")
+        self.execution_horizon = execution_horizon
         from lerobot.policies.rtc.configuration_rtc import RTCConfig
         self.policy.config.rtc_config = RTCConfig(
             enabled=True,
-            mode="trained",
-            execution_horizon=10,
-        )
+            mode=rtc_mode,
+            execution_horizon=self.execution_horizon,
+        ) if rtc_mode != "off" else None
         self.policy.init_rtc_processor()
         if not 0 < action_horizon <= self.policy.config.chunk_size:
             raise ValueError(
@@ -65,10 +79,12 @@ class PI05Server:
         self.action_dim = int(self.policy.config.output_features["action"].shape[0])
         if self.action_dim != 14:
             raise ValueError(f"Seer dual-arm PI05 expects 14 action values, got {self.action_dim}")
+        started = time.perf_counter()
+        print("[startup] loading observation/action processors", flush=True)
         self.pre, self.post = make_pre_post_processors(
             policy_cfg=self.policy.config,
             pretrained_path=checkpoint,
-            dataset_stats=self.dataset.meta.stats,
+            # Deployment must retain the statistics saved with the trained weights.
             preprocessor_overrides={"device_processor": {"device": str(self.device)}},
         )
         preprocessor_config = json.loads(
@@ -84,6 +100,26 @@ class PI05Server:
         if self.action_q01.numel() != self.action_dim or self.action_q99.numel() != self.action_dim:
             raise ValueError("checkpoint action normalization stats do not match PI05 action dimension")
         self.action_range = (self.action_q99 - self.action_q01).clamp_min(1e-8)
+        # Fail startup if ordinary decoding and RTC prefix encoding disagree.
+        for pipeline in (self.pre, self.post):
+            normalizers = [step for step in pipeline.steps
+                           if "action" in getattr(step, "_tensor_stats", {})]
+            if len(normalizers) != 1:
+                raise ValueError("expected one action normalizer per processor pipeline")
+            effective = normalizers[0]._tensor_stats["action"]
+            for name, expected in (("q01", self.action_q01), ("q99", self.action_q99)):
+                actual = effective[name].to(device=expected.device, dtype=expected.dtype)
+                if not torch.equal(actual, expected):
+                    raise ValueError(f"processor action {name} differs from checkpoint RTC statistics")
+        print(f"[startup] processors/statistics ready in {time.perf_counter() - started:.2f}s", flush=True)
+        self.server_info["initialization_seconds"] = round(time.perf_counter() - startup_started, 3)
+        self.server_info.update(
+            normalization_source="checkpoint_saved",
+            rtc_mode=self.rtc_mode,
+            rtc_training_max_delay=training_max_delay,
+            default_execution_horizon=self.execution_horizon,
+        )
+        print(f"[checkpoint] {json.dumps(self.server_info)}", flush=True)
         self.lock = threading.Lock()
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pi05-inference")
 
@@ -131,18 +167,18 @@ class PI05Server:
                 previous = None
                 for index in range(steps):
                     req.pi05_rtc = {
-                        "enabled": True, "mode": "trained", "execution_horizon": 10,
-                        "inference_delay": 0 if previous is None else 6,
-                        "prev_chunk_left_over": previous,
+                        "enabled": self.rtc_mode != "off", "mode": self.rtc_mode, "execution_horizon": self.execution_horizon,
+                        "inference_delay": 0 if previous is None or self.rtc_mode == "off" else 6,
+                        "prev_chunk_left_over": previous if self.rtc_mode != "off" else None,
                     }
                     result = self.infer(req)
                     timing = result["server_timing_ms"]
                     timings.append(timing)
-                    previous = result["action_chunk"][10:]
+                    previous = result["action_chunk"][self.execution_horizon:]
                     print(
                         f"[warm-up] pass {index + 1}/{steps}: "
                         f"predict_ms={timing['predict']:.2f}, total_ms={timing['total']:.2f}, "
-                        f"rtc_prefix={index > 0}", flush=True,
+                        f"rtc_prefix={index > 0 and self.rtc_mode != 'off'}", flush=True,
                     )
         finally:
             self.policy.reset()
@@ -206,19 +242,37 @@ class PI05Server:
             "observation.images.right_wrist": images["right_wrist_image"],
         }
         obs = prepare_observation_for_inference(obs, self.device, task=req.task, robot_type="seer_dual_arm")
-        with self.lock, torch.inference_mode():
+        with self.lock, torch.no_grad():
             preprocess_started = time.perf_counter()
             processed = self.pre(obs)
             rtc = req.pi05_rtc or {}
             rtc_enabled = bool(rtc.get("enabled", False))
+            if rtc_enabled and self.rtc_mode == "off":
+                raise ValueError("server mode=off cannot accept trained RTC requests")
+            if rtc.get("mode", self.rtc_mode) != self.rtc_mode:
+                raise ValueError(f"request RTC mode does not match server mode={self.rtc_mode}")
             rtc_delay = int(rtc.get("inference_delay", 0))
-            rtc_execution_horizon = int(rtc.get("execution_horizon", 10))
+            rtc_execution_horizon = int(rtc.get("execution_horizon", self.execution_horizon))
+            if rtc_enabled and self.rtc_mode == "trained":
+                if rtc.get("mode", "trained") != "trained":
+                    raise ValueError("PI05 checkpoint requires RTC mode=trained")
+                if not 0 <= rtc_delay <= self.training_max_delay:
+                    raise ValueError("RTC inference_delay exceeds checkpoint training range")
+                if not self.training_max_delay <= rtc_execution_horizon <= self.policy.config.chunk_size - self.training_max_delay:
+                    raise ValueError("RTC execution_horizon is outside checkpoint training range")
+            if rtc_enabled and self.rtc_mode == "guided":
+                if not 0 <= rtc_delay < rtc_execution_horizon <= self.policy.config.chunk_size:
+                    raise ValueError("guided RTC requires 0 <= delay < execution_horizon <= chunk_size")
             prev_chunk = rtc.get("prev_chunk_left_over")
+            if rtc_enabled and rtc_delay > 0 and prev_chunk is None:
+                raise ValueError("positive RTC inference_delay requires a previous chunk")
             rtc_prefix = None
-            if prev_chunk is not None:
-                absolute = np.asarray(prev_chunk, dtype=np.float64)
+            if rtc_enabled and prev_chunk is not None:
+                absolute = np.array(prev_chunk, dtype=np.float64, copy=True)
                 if absolute.ndim != 2 or absolute.shape[1] != 14:
                     raise ValueError("PI05 RTC previous chunk must have shape (steps, 14)")
+                if absolute.shape[0] < rtc_delay or absolute.shape[0] > self.policy.config.chunk_size or not np.isfinite(absolute).all():
+                    raise ValueError("RTC prefix length/values are invalid")
                 state = self._state30(req).astype(np.float64)
                 for arm, state_offset in ((0, 18), (6, 24)):
                     current_rotation = Rotation.from_rotvec(state[state_offset + 3:state_offset + 6])
@@ -295,7 +349,7 @@ class PI05Server:
             "action_names": names,
             "rtc_supported": bool((req.pi05_rtc or {}).get("enabled", False)),
             "rtc_action_chunk": rtc_action_chunk.tolist(),
-            "rtc_mode": (req.pi05_rtc or {}).get("mode"),
+            "rtc_mode": self.rtc_mode,
             "rtc_inference_delay": int((req.pi05_rtc or {}).get("inference_delay", 0)),
         }
 
@@ -309,15 +363,17 @@ def main() -> None:
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--action-horizon", type=int, default=32)
     ap.add_argument("--warmup-steps", type=int, default=3)
+    ap.add_argument("--execution-horizon", type=int, default=15)
+    ap.add_argument("--rtc-mode", choices=("trained", "guided", "off"), default="trained")
     args = ap.parse_args()
     if args.warmup_steps < 0:
         ap.error("--warmup-steps must be non-negative")
-    server = PI05Server(args.checkpoint, args.dataset_root, args.device, args.action_horizon)
+    server = PI05Server(args.checkpoint, args.dataset_root, args.device, args.action_horizon, args.execution_horizon, args.rtc_mode)
     server.pool.submit(server.warmup, args.warmup_steps).result()
     app = FastAPI(title="Seer PI05 inference")
 
     @app.get("/health")
-    def health(): return {"status": "ok", "backend": "pi05"}
+    def health(): return {"status": "ok", "backend": "pi05", "server_info": server.server_info}
 
     @app.post("/v1/pi05/action")
     def action(req: Request):

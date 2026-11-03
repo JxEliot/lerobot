@@ -99,3 +99,32 @@ bash run_pi05_finetune.sh full 10000 16 2000
 Useful overrides include `NUM_GPUS`, `NUM_WORKERS`, `OUTPUT_DIR`, `N_ACTION_STEPS`, `DATASET_ROOT`, `MODEL_ROOT`, and `TOKENIZER_ROOT`.
 
 Pi0.5's configured 30,000-step learning-rate schedule is automatically scaled by this LeRobot version when a shorter run is requested. At the default 2000 steps, warmup is scaled from 1000 to 66 steps and cosine decay ends at step 2000. The learning rate remains the Pi0.5 preset `2.5e-5`: do not linearly scale it with the larger global batch on this 103-episode dataset without a validation comparison.
+
+## Training data fixes (2026-10-13)
+
+Fresh Seer v2.1 PI05 runs now canonicalize quaternion signs before converting to
+rotation vectors. Fresh GR00T-compatible PI05 training computes normalization
+statistics from every selected training anchor and its full `chunk_size` future
+actions, including the same final-action repetition as the dataset reader.
+Statistics are held in memory and saved into the new checkpoint processors; the
+original dataset statistics and existing checkpoints are not rewritten. Resumed
+runs continue to use their saved checkpoint statistics. Both RTC comparison
+wrappers automatically use these fixes when starting a fresh run.
+
+To inspect/export the new 50-step statistics without changing the dataset:
+
+```bash
+/root/venvs/lerobot-pi05/bin/python compute_gr00t_eef_stats.py \
+  --dataset-root /mnt/cfs/usr/jixiang/train_datasets/lerobot_ee_v21 \
+  --chunk-size 50 \
+  --output inference_results/training_audit/chunk50_stats_fixed.json
+```
+
+The previous conversion bug affects dataset-based offline evaluation as well;
+rerun comparisons after the fix. Existing checkpoints must retain their saved
+statistics because the weights were trained with that normalization. Train fresh
+RTC/no-RTC checkpoints from the same base model.
+
+### Training image augmentation
+
+Fresh runs enable mild brightness/contrast (0.9–1.1) and sharpness (0.8–1.2) augmentation by default, with two transforms sampled per image. Spatial affine transforms are excluded. Both RTC comparison scripts inherit this configuration. Use `IMAGE_AUGMENTATION=false` to disable. Resume runs retain their saved training configuration. Original dataset images are not rewritten.

@@ -4,12 +4,14 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${REPO_ROOT:-$(cd -- "${SCRIPT_DIR}/.." && pwd)}"
 PYTHON_BIN="${PYTHON_BIN:-/root/venvs/lerobot-pi05/bin/python}"
-CHECKPOINT="${CHECKPOINT:-${SCRIPT_DIR}/checkpoints/full-20260930-162041/checkpoints/008000/pretrained_model}"
+# CHECKPOINT="${CHECKPOINT:-${SCRIPT_DIR}/checkpoints/rtc/full-20261013-133656/checkpoints/010000/pretrained_model}"
+CHECKPOINT="${CHECKPOINT:-${SCRIPT_DIR}/checkpoints/no-rtc/full-20261013-132623/checkpoints/010000/pretrained_model}"
+# /mnt/cfs/usr/jixiang/vla_learning/lerobot/pi05_finetune/checkpoints/no-rtc/full-20261013-132623/checkpoints/010000/pretrained_model/
 DATASET="${DATASET:-/mnt/cfs/usr/jixiang/train_datasets/lerobot_ee_v21}"
 EPISODES="${EPISODES:-0 1 2 3 4}"
 STEPS="${STEPS:-0}"
 DEVICE="${DEVICE:-cuda}"
-OUTPUT="${OUTPUT:-${SCRIPT_DIR}/inference_results/pi05.png}"
+OUTPUT="${OUTPUT:-${SCRIPT_DIR}/inference_results/no-rtc/pi05.png}"
 
 usage() {
   cat <<'EOF'
