@@ -20,6 +20,9 @@ are never changed.
 - Action normalization statistics are computed on the selected training episodes and exact
   50-step chunks. Chunks repeat the final action within their own episode, matching LeRobot's
   episode-boundary padding.
+- Before training, the adapter checks each camera's decoded frame count against parquet timestamps.
+  If a camera is missing terminal frames, it excludes those episode-tail observation rows and
+  reports the affected episodes. The original parquet and video files remain unchanged.
 
 ## Server setup and launch
 
