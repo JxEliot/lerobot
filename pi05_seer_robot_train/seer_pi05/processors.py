@@ -56,7 +56,14 @@ def _rotvec_to_quaternion(rotvec: torch.Tensor) -> torch.Tensor:
 
 def _quaternion_to_rotvec(quaternion: torch.Tensor) -> torch.Tensor:
     quaternion = _normalize_quaternion(quaternion)
-    quaternion = torch.where(quaternion[..., 3:4] < 0, -quaternion, quaternion)
+    vector = quaternion[..., :3]
+    first_nonzero = torch.where(
+        vector[..., 0:1] != 0,
+        vector[..., 0:1],
+        torch.where(vector[..., 1:2] != 0, vector[..., 1:2], vector[..., 2:3]),
+    )
+    flip = (quaternion[..., 3:4] < 0) | ((quaternion[..., 3:4] == 0) & (first_nonzero < 0))
+    quaternion = torch.where(flip, -quaternion, quaternion)
     vector = quaternion[..., :3]
     sin_half = torch.linalg.vector_norm(vector, dim=-1, keepdim=True)
     angle = 2.0 * torch.atan2(sin_half, quaternion[..., 3:4].clamp(0.0, 1.0))
@@ -179,7 +186,10 @@ class SeerEefRelativeActionsProcessorStep(RelativeActionsProcessorStep):
                 result[TransitionKey.ACTION] = action
         if state.shape[-1] != 30:
             raise ValueError(f"Expected compact 30D Seer state, got {tuple(state.shape)}")
-        self._last_state = state
+        # Keep the observation that anchored the current prediction until PI05 has
+        # served every action in that chunk. Postprocessing uses the same state.
+        if not self._chunk_in_flight():
+            self._last_state = state
         if self.enabled and action is not None:
             if action.shape[-1] != 14:
                 raise ValueError(f"Expected compact 14D Seer action, got {tuple(action.shape)}")

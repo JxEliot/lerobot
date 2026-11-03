@@ -42,7 +42,14 @@ def _rotvec_to_quat_np(rotvec: np.ndarray) -> np.ndarray:
 
 def _quat_to_rotvec_np(quaternion: np.ndarray) -> np.ndarray:
     quaternion = _unit_quaternion_np(quaternion)
-    quaternion = np.where(quaternion[..., 3:4] < 0, -quaternion, quaternion)
+    vector = quaternion[..., :3]
+    first_nonzero = np.where(
+        vector[..., 0:1] != 0,
+        vector[..., 0:1],
+        np.where(vector[..., 1:2] != 0, vector[..., 1:2], vector[..., 2:3]),
+    )
+    flip = (quaternion[..., 3:4] < 0) | ((quaternion[..., 3:4] == 0) & (first_nonzero < 0))
+    quaternion = np.where(flip, -quaternion, quaternion)
     vector = quaternion[..., :3]
     sin_half = np.linalg.norm(vector, axis=-1, keepdims=True)
     angle = 2.0 * np.arctan2(sin_half, np.clip(quaternion[..., 3:4], 0.0, 1.0))
