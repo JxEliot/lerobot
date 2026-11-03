@@ -23,15 +23,14 @@ are never changed.
 
 ## Server setup and launch
 
-Run from a clean checkout of `feat/pi-train`. The server paths below match the current server
-environment. The example environment file selects `/root/venvs/lerobot-pi05/bin/python` and
-`/root/venvs/lerobot-pi05/bin/torchrun`; override them through environment variables or `ENV_FILE`
-when needed.
+Run from a clean checkout of `feat/pi-train`. The launch scripts default to the server virtual
+environment at `/root/venvs/lerobot-pi05`; override `VENV_ROOT`, `PYTHON_BIN`, or `TORCHRUN` when
+needed. `ENV_FILE` remains available for dataset and training settings.
 
 ```bash
 cd /mnt/cfs/usr/jixiang/vla_learning/lerobot_pi05_train
-ENV_FILE=pi05_seer_robot_train/config/server.env.example bash pi05_seer_robot_train/train.sh full 10000 8 0
-ENV_FILE=pi05_seer_robot_train/config/server.env.example bash pi05_seer_robot_train/train_rtc.sh full 10000 8 0
+bash pi05_seer_robot_train/train.sh full 10000 8 0
+bash pi05_seer_robot_train/train_rtc.sh full 10000 8 0
 ```
 
 Both scripts accept `[check|smoke|full] [steps] [batch-per-GPU] [save-frequency]`. `check` validates
