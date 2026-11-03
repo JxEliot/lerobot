@@ -46,6 +46,8 @@ def test_safe_indices_map_episode_prefixes_to_filtered_dataset_rows():
 
 
 def test_dataset_view_maps_filtered_rows_and_supports_python_indexing():
+    from lerobot.datasets.sampler import EpisodeAwareSampler
+
     class FakeDataset:
         def __len__(self):
             return 5
@@ -77,6 +79,15 @@ def test_dataset_view_maps_filtered_rows_and_supports_python_indexing():
     assert list(view.meta.episodes["dataset_to_index"]) == [2, 4]
     assert view[-1][STATE_KEY][0] == 3
     assert [item[STATE_KEY][0] for item in view.__getitems__([2, 0])] == [3, 0]
+
+    sampler = EpisodeAwareSampler(
+        view.meta.episodes["dataset_from_index"],
+        view.meta.episodes["dataset_to_index"],
+        episode_indices_to_use=view.episodes,
+        shuffle=False,
+        absolute_to_relative_idx=view.absolute_to_relative_idx,
+    )
+    assert list(sampler) == [0, 1, 2]
 
 
 def test_training_stats_keep_future_actions_for_valid_video_samples(tmp_path):
