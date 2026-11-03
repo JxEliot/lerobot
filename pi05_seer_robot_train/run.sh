@@ -35,10 +35,23 @@ NUM_GPUS="${NUM_GPUS:-1}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
 GRAD_ACCUM_STEPS="${GRAD_ACCUM_STEPS:-1}"
 N_ACTION_STEPS="${N_ACTION_STEPS:-10}"
-RTC_TRAIN_MAX_DELAY="${RTC_TRAIN_MAX_DELAY:-0}"
+CHUNK_SIZE="${CHUNK_SIZE:-50}"
+TRAINING_PROFILE="${TRAINING_PROFILE:-default}"
+case "${TRAINING_PROFILE}" in
+  no-rtc) RTC_TRAIN_MAX_DELAY=0 ;;
+  rtc) RTC_TRAIN_MAX_DELAY="${RTC_TRAIN_MAX_DELAY:-10}" ;;
+  *) RTC_TRAIN_MAX_DELAY="${RTC_TRAIN_MAX_DELAY:-0}" ;;
+esac
+OPTIMIZER_LR="${OPTIMIZER_LR:-2.5e-5}"
+SCHEDULER_WARMUP_STEPS="${SCHEDULER_WARMUP_STEPS:-1000}"
+SCHEDULER_DECAY_STEPS="${SCHEDULER_DECAY_STEPS:-30000}"
+SCHEDULER_DECAY_LR="${SCHEDULER_DECAY_LR:-2.5e-6}"
+LOG_FREQ="${LOG_FREQ:-200}"
+EVAL_STEPS="${EVAL_STEPS:-0}"
 EVAL_SPLIT="${EVAL_SPLIT:-0.05}"
 IMAGE_AUGMENTATION="${IMAGE_AUGMENTATION:-true}"
 TRACKIO_ENABLE="${TRACKIO_ENABLE:-false}"
+JOB_NAME="${JOB_NAME:-seer-pi05-${TRAINING_PROFILE}-${MODE}}"
 KEEP_CHECKPOINTS="${KEEP_CHECKPOINTS:-2}"
 IMAGE_TRANSFORMS='{"brightness":{"weight":1.0,"type":"ColorJitter","kwargs":{"brightness":[0.9,1.1]}},"contrast":{"weight":1.0,"type":"ColorJitter","kwargs":{"contrast":[0.9,1.1]}},"sharpness":{"weight":1.0,"type":"SharpnessJitter","kwargs":{"sharpness":[0.8,1.2]}}}'
 
@@ -59,6 +72,14 @@ fail() {
 
 [[ -d "${LEROBOT_ROOT}/src/lerobot" ]] || fail "LeRobot source not found: ${LEROBOT_ROOT}"
 [[ "${NUM_GPUS}" =~ ^[1-9][0-9]*$ ]] || fail "NUM_GPUS must be a positive integer"
+[[ "${CHUNK_SIZE}" =~ ^[1-9][0-9]*$ ]] || fail "CHUNK_SIZE must be a positive integer"
+[[ "${N_ACTION_STEPS}" =~ ^[1-9][0-9]*$ ]] || fail "N_ACTION_STEPS must be a positive integer"
+[[ "${RTC_TRAIN_MAX_DELAY}" =~ ^(0|[1-9][0-9]*)$ ]] || fail "RTC_TRAIN_MAX_DELAY must be a non-negative integer"
+(( N_ACTION_STEPS <= CHUNK_SIZE )) || fail "N_ACTION_STEPS cannot exceed CHUNK_SIZE"
+(( RTC_TRAIN_MAX_DELAY < CHUNK_SIZE )) || fail "RTC_TRAIN_MAX_DELAY must be smaller than CHUNK_SIZE"
+if [[ "${TRAINING_PROFILE}" == rtc ]] && (( RTC_TRAIN_MAX_DELAY == 0 )); then
+  fail "RTC_TRAIN_MAX_DELAY must be greater than zero for train_rtc.sh"
+fi
 "${PYTHON_BIN}" "${PACKAGE_ROOT}/preflight.py" \
   --dataset-root "${DATASET_ROOT}" \
   --model-root "${MODEL_ROOT}" \
@@ -84,7 +105,9 @@ echo "Starting Seer PI05 ${MODE} run"
 echo "  dataset: ${DATASET_ROOT} (${DATASET_REPO_ID})"
 echo "  output: ${RUN_OUTPUT}"
 echo "  GPUs: ${NUM_GPUS}; batch/GPU: ${BATCH_SIZE}; grad accumulation: ${GRAD_ACCUM_STEPS}"
-echo "  steps: ${STEPS}; full fine-tuning: vision encoder and action expert unfrozen"
+echo "  effective batch: $((BATCH_SIZE * NUM_GPUS * GRAD_ACCUM_STEPS))"
+echo "  steps: ${STEPS}; chunk=${CHUNK_SIZE}; action steps=${N_ACTION_STEPS}; RTC max delay=${RTC_TRAIN_MAX_DELAY}"
+echo "  optimizer LR: ${OPTIMIZER_LR}; full fine-tuning: vision encoder and action expert unfrozen"
 echo "  image augmentation: ${IMAGE_AUGMENTATION} (brightness, contrast, sharpness)"
 
 "${TORCHRUN}" --standalone --nproc-per-node="${NUM_GPUS}" "${PACKAGE_ROOT}/train.py" \
@@ -107,16 +130,22 @@ echo "  image augmentation: ${IMAGE_AUGMENTATION} (brightness, contrast, sharpne
   --policy.gradient_checkpointing=true \
   --policy.dtype=bfloat16 \
   --policy.device=cuda \
-  --policy.chunk_size=50 \
+  --policy.chunk_size="${CHUNK_SIZE}" \
   --policy.n_action_steps="${N_ACTION_STEPS}" \
   --policy.rtc_training_max_delay="${RTC_TRAIN_MAX_DELAY}" \
+  --policy.optimizer_lr="${OPTIMIZER_LR}" \
+  --policy.scheduler_warmup_steps="${SCHEDULER_WARMUP_STEPS}" \
+  --policy.scheduler_decay_steps="${SCHEDULER_DECAY_STEPS}" \
+  --policy.scheduler_decay_lr="${SCHEDULER_DECAY_LR}" \
   --policy.push_to_hub=false \
   --output_dir="${RUN_OUTPUT}" \
-  --job_name="seer-pi05-${MODE}" \
+  --job_name="${JOB_NAME}" \
   --batch_size="${BATCH_SIZE}" \
   --num_workers="${NUM_WORKERS}" \
   --steps="${STEPS}" \
   --save_freq="${SAVE_FREQ}" \
+  --log_freq="${LOG_FREQ}" \
+  --eval_steps="${EVAL_STEPS}" \
   --seed=1000 \
   --accelerator.gradient_accumulation.steps="${GRAD_ACCUM_STEPS}" \
   --trackio.enable="${TRACKIO_ENABLE}" \

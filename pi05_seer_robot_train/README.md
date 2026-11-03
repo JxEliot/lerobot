@@ -24,21 +24,35 @@ are never changed.
 ## Server setup and launch
 
 Run from a clean checkout of `feat/pi-train`. The server paths below match the current server
-environment; override them through environment variables or `ENV_FILE` when needed.
+environment. The example environment file selects `/root/venvs/lerobot-pi05/bin/python` and
+`/root/venvs/lerobot-pi05/bin/torchrun`; override them through environment variables or `ENV_FILE`
+when needed.
 
 ```bash
 cd /mnt/cfs/usr/jixiang/vla_learning/lerobot_pi05_train
-ENV_FILE=pi05_seer_robot_train/config/server.env.example bash pi05_seer_robot_train/run.sh check
-ENV_FILE=pi05_seer_robot_train/config/server.env.example bash pi05_seer_robot_train/run.sh smoke
-ENV_FILE=pi05_seer_robot_train/config/server.env.example bash pi05_seer_robot_train/run.sh full
+ENV_FILE=pi05_seer_robot_train/config/server.env.example bash pi05_seer_robot_train/train.sh full 10000 8 0
+ENV_FILE=pi05_seer_robot_train/config/server.env.example bash pi05_seer_robot_train/train_rtc.sh full 10000 8 0
 ```
 
-`check` validates dataset metadata, local model/tokenizer assets, GPU count, and bfloat16 support.
-`smoke` runs two optimizer steps. `full` defaults to 10,000 steps, batch size 8 per GPU, and saves
-the final checkpoint only. A periodic checkpoint interval can be passed as the fourth argument or
-through `SAVE_FREQ`; keep in mind that full PI05 checkpoints require substantial disk space.
+Both scripts accept `[check|smoke|full] [steps] [batch-per-GPU] [save-frequency]`. `check` validates
+dataset metadata, local model/tokenizer assets, GPU count, and bfloat16 support. `smoke` runs two
+optimizer steps. `full` defaults to 10,000 steps, batch size 8 per GPU, and saves the final checkpoint
+only. A periodic checkpoint interval can be passed as the fourth argument or through `SAVE_FREQ`.
+Full PI05 checkpoints require substantial disk space.
 
-The full run explicitly leaves the vision encoder and action expert unfrozen and disables PEFT.
+`train.sh` disables trained RTC prefixes. `train_rtc.sh` uses the previous branch's RTC training
+setting: `RTC_TRAIN_MAX_DELAY=10`, with `chunk_size=50` and `n_action_steps=10` by default. At 20 FPS,
+10 steps represent up to 0.5 seconds of action-prefix conditioning. Set `RTC_TRAIN_MAX_DELAY` to adjust
+the RTC prefix range.
+
+Both scripts fully fine-tune the vision encoder and action expert (`freeze_vision_encoder=false`,
+`train_expert_only=false`, `use_peft=false`). Training settings can be overridden with environment
+variables, including `BATCH_SIZE`, `NUM_GPUS`, `GRAD_ACCUM_STEPS`, `STEPS`, `SAVE_FREQ`, `CHUNK_SIZE`,
+`N_ACTION_STEPS`, `RTC_TRAIN_MAX_DELAY`, `OPTIMIZER_LR`, `SCHEDULER_WARMUP_STEPS`,
+`SCHEDULER_DECAY_STEPS`, `SCHEDULER_DECAY_LR`, `LOG_FREQ`, `EVAL_STEPS`, `EVAL_SPLIT`,
+`NUM_WORKERS`, and `IMAGE_AUGMENTATION`. The four positional arguments override mode, steps, batch per
+GPU, and save frequency. `OUTPUT_BASE` and `OUTPUT_DIR` control checkpoint locations.
+
 Visual augmentation is photometric only: brightness and contrast vary from 0.9 to 1.1, sharpness
 from 0.8 to 1.2, with up to two transforms per image. It does not alter camera geometry.
 
