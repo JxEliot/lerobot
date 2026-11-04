@@ -77,10 +77,14 @@ bash pi05_seer_robot_train/infer_offline.sh \
 
 Each run writes `predictions.csv` with absolute 14D target/predicted actions and per-frame errors,
 plus `summary.json` with position error in meters, rotation geodesic error in degrees, and gripper
-error. Results go beside the selected checkpoint in a timestamped `offline_inference-*` directory.
-Pass `--split all` to inspect training and held-out episodes together, or `--episodes 66,67` to
-select episodes directly. `DATASET_ROOT`, `DATASET_REPO_ID`, `PYTHON_BIN`, and `VENV_ROOT` can be
-overridden in the shell environment or through `ENV_FILE`.
+error. A PNG under `trajectories/` is generated for each tested episode, showing left/right 3D
+end-effector paths (dataset action and prediction), position and rotation errors over time, and
+gripper commands. Results go beside the selected checkpoint in a timestamped `offline_inference-*`
+directory. Pass `--split all` to inspect training and held-out episodes together, or `--episodes`
+with comma-separated dataset indices to select episodes directly. For this dataset the valid indices
+are `0` through `119`; for example, `--episodes 114` tests one held-out episode and creates one PNG.
+`DATASET_ROOT`, `DATASET_REPO_ID`, `PYTHON_BIN`, and `VENV_ROOT` can be overridden in the shell
+environment or through `ENV_FILE`.
 
 ## Resume
 
