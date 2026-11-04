@@ -36,6 +36,7 @@ from pi05_seer_robot_train.seer_pi05.data import (
     _safe_relative_indices,
 )
 
+
 def _resolve_checkpoint(path: Path) -> Path:
     path = path.expanduser().resolve()
     if (path / "config.json").is_file():
@@ -115,7 +116,11 @@ def _resolve_output_dir(output_dir: Path | None, checkpoint: Path) -> Path:
     if output_dir is not None:
         return output_dir.expanduser().resolve()
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return checkpoint.parent / f"offline_inference-{stamp}"
+    run_dir = next(
+        (parent.parent for parent in checkpoint.parents if parent.name == "checkpoints"),
+        checkpoint.parent,
+    )
+    return run_dir / "inference_results" / f"validation-{stamp}"
 
 
 def _metrics(rows: list[dict[str, Any]]) -> dict[str, float | int]:
@@ -138,7 +143,9 @@ def _metrics(rows: list[dict[str, Any]]) -> dict[str, float | int]:
     return metrics
 
 
-def _plot_episode_trajectory(rows: list[dict[str, Any]], output_path: Path) -> None:
+def _plot_episode_trajectory(
+    rows: list[dict[str, Any]], output_path: Path, action_refresh_interval: int
+) -> None:
     import matplotlib
 
     matplotlib.use("Agg")
@@ -146,92 +153,47 @@ def _plot_episode_trajectory(rows: list[dict[str, Any]], output_path: Path) -> N
 
     episode = int(rows[0]["episode_index"])
     frame_indices = np.asarray([row["frame_index"] for row in rows])
-    figure = plt.figure(figsize=(16, 15), constrained_layout=True)
-    figure.suptitle(f"PI05 Offline Validation | Episode {episode} | {rows[0]['task']}", fontsize=15)
+    target = np.asarray(
+        [[row[f"target_{name}"] for name in ACTION_NAMES] for row in rows], dtype=np.float32
+    )
+    prediction = np.asarray(
+        [[row[f"pred_{name}"] for name in ACTION_NAMES] for row in rows], dtype=np.float32
+    )
+    figure, axes = plt.subplots(
+        nrows=len(ACTION_NAMES),
+        ncols=1,
+        figsize=(8, 4 * len(ACTION_NAMES)),
+        sharex=True,
+        squeeze=False,
+    )
+    figure.suptitle(
+        f"Episode {episode} | Dataset action vs PI05 prediction\n{rows[0]['task']}",
+        fontsize=16,
+        color="blue",
+    )
+    inference_indices = np.arange(0, len(rows), max(1, action_refresh_interval))
 
-    for column, arm in enumerate(("Left", "Right"), start=1):
-        axis = figure.add_subplot(3, 2, column, projection="3d")
-        position_names = ("x", "y", "z")
-        target = np.asarray(
-            [[row[f"target_{arm.lower()}_ee.{name}"] for name in position_names] for row in rows]
+    for action_index, action_name in enumerate(ACTION_NAMES):
+        axis = axes[action_index, 0]
+        axis.plot(frame_indices, target[:, action_index], label="Dataset action")
+        axis.plot(frame_indices, prediction[:, action_index], label="PI05 prediction")
+        axis.scatter(
+            frame_indices[inference_indices],
+            target[inference_indices, action_index],
+            color="red",
+            s=18,
+            label="Inference point" if action_index == 0 else None,
+            zorder=3,
         )
-        prediction = np.asarray(
-            [[row[f"pred_{arm.lower()}_ee.{name}"] for name in position_names] for row in rows]
-        )
-        axis.plot(*target.T, color="#2563eb", linewidth=1.8, label="Dataset action")
-        axis.plot(*prediction.T, color="#e4572e", linewidth=1.8, label="PI05 prediction")
-        axis.scatter(*target[0], color="#2563eb", marker="o", s=34, label="Start")
-        axis.scatter(*target[-1], color="#111827", marker="X", s=42, label="End")
-        axis.set_title(f"{arm} end-effector trajectory")
-        axis.set_xlabel("X (m)")
-        axis.set_ylabel("Y (m)")
-        axis.set_zlabel("Z (m)")
-        points = np.concatenate((target, prediction), axis=0)
-        axis.set_box_aspect(np.maximum(np.ptp(points, axis=0), 1e-3))
+        axis.set_title(f"Action {action_index}: {action_name}")
+        axis.grid(alpha=0.25)
         axis.legend(fontsize=8, loc="best")
 
-    position_axis = figure.add_subplot(3, 2, 3)
-    position_axis.plot(
-        frame_indices,
-        [row["left_position_error_m"] * 100 for row in rows],
-        label="Left",
-        color="#2563eb",
-    )
-    position_axis.plot(
-        frame_indices,
-        [row["right_position_error_m"] * 100 for row in rows],
-        label="Right",
-        color="#e4572e",
-    )
-    position_axis.set_title("Position error")
-    position_axis.set_xlabel("Frame index")
-    position_axis.set_ylabel("Error (cm)")
-    position_axis.grid(alpha=0.25)
-    position_axis.legend()
-
-    rotation_axis = figure.add_subplot(3, 2, 4)
-    rotation_axis.plot(
-        frame_indices,
-        [row["left_rotation_error_deg"] for row in rows],
-        label="Left",
-        color="#2563eb",
-    )
-    rotation_axis.plot(
-        frame_indices,
-        [row["right_rotation_error_deg"] for row in rows],
-        label="Right",
-        color="#e4572e",
-    )
-    rotation_axis.set_title("Rotation error")
-    rotation_axis.set_xlabel("Frame index")
-    rotation_axis.set_ylabel("Geodesic error (deg)")
-    rotation_axis.grid(alpha=0.25)
-    rotation_axis.legend()
-
-    for column, arm in enumerate(("left", "right"), start=1):
-        gripper_axis = figure.add_subplot(3, 2, 4 + column)
-        gripper_axis.plot(
-            frame_indices,
-            [row[f"target_{arm}_gripper"] for row in rows],
-            color="#2563eb",
-            linewidth=1.6,
-            label="Dataset action",
-        )
-        gripper_axis.plot(
-            frame_indices,
-            [row[f"pred_{arm}_gripper"] for row in rows],
-            color="#e4572e",
-            linewidth=1.6,
-            label="PI05 prediction",
-        )
-        gripper_axis.set_title(f"{arm.title()} gripper")
-        gripper_axis.set_xlabel("Frame index")
-        gripper_axis.set_ylabel("Command")
-        gripper_axis.grid(alpha=0.25)
-        gripper_axis.legend(fontsize=8)
+    axes[-1, 0].set_xlabel("Frame index")
+    figure.tight_layout(rect=(0, 0, 1, 0.995))
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(output_path, dpi=160)
+    figure.savefig(output_path, dpi=100)
     plt.close(figure)
 
 
@@ -424,21 +386,57 @@ def _run(args: argparse.Namespace) -> None:
         "metrics": _metrics(all_rows),
         "predictions_csv": str(prediction_path),
     }
-    trajectory_images = []
+    action_refresh_interval = max(1, int(getattr(policy.config, "n_action_steps", 1)))
+    episode_results: list[dict[str, Any]] = []
+    episode_result_by_id: dict[int, dict[str, Any]] = {}
+    trajectory_images: list[str] = []
+    rows_by_episode: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for row in all_rows:
+        rows_by_episode[int(row["episode_index"])].append(row)
+
+    for episode, rows in rows_by_episode.items():
+        target = np.asarray(
+            [[row[f"target_{name}"] for name in ACTION_NAMES] for row in rows], dtype=np.float32
+        )
+        prediction = np.asarray(
+            [[row[f"pred_{name}"] for name in ACTION_NAMES] for row in rows], dtype=np.float32
+        )
+        episode_path = output_dir / f"episode_{episode:06d}.npz"
+        np.savez_compressed(
+            episode_path,
+            pred_action=prediction,
+            gt_action=target,
+            action_keys=np.asarray(ACTION_NAMES),
+            episode_id=episode,
+            frame_index=np.asarray([row["frame_index"] for row in rows], dtype=np.int64),
+            action_refresh_interval=action_refresh_interval,
+        )
+        episode_result: dict[str, Any] = {
+            "episode_id": episode,
+            "steps": len(rows),
+            "prediction_path": str(episode_path),
+        }
+        episode_results.append(episode_result)
+        episode_result_by_id[episode] = episode_result
+        logging.info("Episode predictions: %s", episode_path)
+
     if not args.no_plots:
-        rows_by_episode: dict[int, list[dict[str, Any]]] = defaultdict(list)
-        for row in all_rows:
-            rows_by_episode[int(row["episode_index"])].append(row)
         for episode, rows in rows_by_episode.items():
-            image_path = output_dir / "trajectories" / f"trajectory_episode_{episode:06d}.png"
-            _plot_episode_trajectory(rows, image_path)
+            image_path = output_dir / f"trajectory_episode_{episode:06d}.png"
+            _plot_episode_trajectory(rows, image_path, action_refresh_interval)
+            episode_result_by_id[episode]["plot_path"] = str(image_path)
             trajectory_images.append(str(image_path))
             logging.info("Trajectory plot: %s", image_path)
+
+    summary["action_refresh_interval"] = action_refresh_interval
+    summary["episode_results"] = episode_results
+    if not args.no_plots:
         summary["trajectory_images"] = trajectory_images
 
     summary_path = output_dir / "summary.json"
     summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n")
     logging.info("Summary: %s", json.dumps(summary["metrics"], ensure_ascii=False))
+    logging.info("Validation results: %s", output_dir)
     logging.info("Predictions: %s", prediction_path)
     logging.info("Summary file: %s", summary_path)
 
@@ -483,7 +481,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--log-every", type=int, default=20)
-    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        help="result directory; defaults to <training run>/inference_results/validation-<timestamp>",
+    )
     parser.add_argument("--no-plots", action="store_true", help="skip per-episode trajectory PNG generation")
     args = parser.parse_args()
     args.checkpoint = args.checkpoint or args.checkpoint_path

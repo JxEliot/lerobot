@@ -75,14 +75,23 @@ bash pi05_seer_robot_train/infer_offline.sh \
   --max-frames-per-episode 100
 ```
 
-Each run writes `predictions.csv` with absolute 14D target/predicted actions and per-frame errors,
-plus `summary.json` with position error in meters, rotation geodesic error in degrees, and gripper
-error. A PNG under `trajectories/` is generated for each tested episode, showing left/right 3D
-end-effector paths (dataset action and prediction), position and rotation errors over time, and
-gripper commands. Results go beside the selected checkpoint in a timestamped `offline_inference-*`
-directory. Pass `--split all` to inspect training and held-out episodes together, or `--episodes`
-with comma-separated dataset indices to select episodes directly. For this dataset the valid indices
-are `0` through `119`; for example, `--episodes 114` tests one held-out episode and creates one PNG.
+Each run writes one organized result directory under the training run's `inference_results/` folder.
+It contains `predictions.csv`, `summary.json`, a compressed `episode_<index>.npz` for each tested
+episode, and a `trajectory_episode_<index>.png` action comparison plot. The plot follows the GR00T
+validation layout: one panel per action dimension, dataset action overlaid with PI05 prediction, and
+red markers where PI05 refreshes its action chunk. Pass `--output-dir` to choose a readable folder
+name; otherwise a timestamped `validation-*` folder is created automatically. Pass `--split all` to
+inspect training and held-out episodes together, or `--episodes` with comma-separated dataset indices
+to select episodes directly. For this dataset the valid indices are `0` through `119`; for example:
+
+```bash
+bash pi05_seer_robot_train/infer_offline.sh \
+  pi05_seer_robot_train/checkpoints/no-rtc/full-20261103-185856 \
+  --episodes 114 \
+  --max-frames-per-episode 0 \
+  --output-dir pi05_seer_robot_train/checkpoints/no-rtc/full-20261103-185856/inference_results/episode-114
+```
+
 `DATASET_ROOT`, `DATASET_REPO_ID`, `PYTHON_BIN`, and `VENV_ROOT` can be overridden in the shell
 environment or through `ENV_FILE`.
 
