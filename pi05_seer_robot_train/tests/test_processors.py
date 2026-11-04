@@ -103,3 +103,28 @@ def test_inference_keeps_chunk_anchor_until_queued_actions_are_drained():
     policy.queued_actions = 0
     relative_step({TransitionKey.OBSERVATION: {OBS_STATE: state_after_first_action}})
     torch.testing.assert_close(relative_step.get_cached_state(), state_after_first_action)
+
+
+def test_absolute_action_postprocessor_aligns_cached_state_device():
+    if not torch.cuda.is_available():
+        import pytest
+
+        pytest.skip("CUDA is required to exercise cross-device processor output")
+
+    from lerobot.lerobot_types import TransitionKey
+
+    relative_step = SeerEefRelativeActionsProcessorStep()
+    state = torch.zeros((1, 30), dtype=torch.float32, device="cuda")
+    state[:, 18:21] = torch.tensor([1.0, 2.0, 3.0], device="cuda")
+    relative_step._last_state = state
+    action = torch.zeros((1, 14), dtype=torch.float32)
+    action[:, :3] = torch.tensor([0.5, -0.25, 1.0])
+    action[:, 12:] = torch.tensor([0.2, 0.8])
+
+    output = SeerEefAbsoluteActionsProcessorStep(relative_step=relative_step)(
+        {TransitionKey.ACTION: action}
+    )[TransitionKey.ACTION]
+
+    assert output.device.type == "cpu"
+    torch.testing.assert_close(output[:, :3], torch.tensor([[1.5, 1.75, 4.0]]))
+    torch.testing.assert_close(output[:, 12:], action[:, 12:])

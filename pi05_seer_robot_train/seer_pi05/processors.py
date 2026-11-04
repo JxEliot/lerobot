@@ -215,6 +215,9 @@ class SeerEefAbsoluteActionsProcessorStep(AbsoluteActionsProcessorStep):
         action = transition.get(TransitionKey.ACTION)
         if state is None or action is None:
             return transition
+        if not isinstance(action, torch.Tensor):
+            raise ValueError(f"Expected a tensor action, got {type(action)}")
+        state = state.to(device=action.device, dtype=action.dtype)
         result = transition.copy()
         result[TransitionKey.ACTION] = _absolute_actions(state, action)
         return result
