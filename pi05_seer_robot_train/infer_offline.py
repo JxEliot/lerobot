@@ -189,7 +189,6 @@ def _run(args: argparse.Namespace) -> None:
         root=dataset_root,
         episodes=episodes,
         return_uint8=True,
-        video_decoder_cache_size=4,
     )
     valid_lengths, truncation_causes = _inspect_video_safe_rows(dataset, episodes)
     video_tail_rows = sum(
