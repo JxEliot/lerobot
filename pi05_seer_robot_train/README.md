@@ -58,6 +58,30 @@ GPU, and save frequency. `OUTPUT_BASE` and `OUTPUT_DIR` control checkpoint locat
 Visual augmentation is photometric only: brightness and contrast vary from 0.9 to 1.1, sharpness
 from 0.8 to 1.2, with up to two transforms per image. It does not alter camera geometry.
 
+## Offline inference
+
+`infer_offline.sh` loads the checkpoint's saved PI05 config and custom Seer processors, then runs
+teacher-forced inference on the held-out episodes from that run's `eval_split`. It does not connect
+to a robot or simulator. The default checks up to 100 frames per episode; set
+`--max-frames-per-episode 0` to process every valid frame.
+
+```bash
+bash pi05_seer_robot_train/infer_offline.sh \
+  pi05_seer_robot_train/checkpoints/rtc/full-20261103-185442 \
+  --max-frames-per-episode 100
+
+bash pi05_seer_robot_train/infer_offline.sh \
+  pi05_seer_robot_train/checkpoints/no-rtc/full-20261103-185856 \
+  --max-frames-per-episode 100
+```
+
+Each run writes `predictions.csv` with absolute 14D target/predicted actions and per-frame errors,
+plus `summary.json` with position error in meters, rotation geodesic error in degrees, and gripper
+error. Results go beside the selected checkpoint in a timestamped `offline_inference-*` directory.
+Pass `--split all` to inspect training and held-out episodes together, or `--episodes 66,67` to
+select episodes directly. `DATASET_ROOT`, `DATASET_REPO_ID`, `PYTHON_BIN`, and `VENV_ROOT` can be
+overridden in the shell environment or through `ENV_FILE`.
+
 ## Resume
 
 Use the checkpoint's `train_config.json` with the standard LeRobot resume flow, for example:
