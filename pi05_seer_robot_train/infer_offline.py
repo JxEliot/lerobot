@@ -338,6 +338,12 @@ def _run(args: argparse.Namespace) -> None:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "checkpoint_path",
+        nargs="?",
+        type=Path,
+        help="optional positional checkpoint path",
+    )
+    parser.add_argument(
         "--checkpoint",
         type=Path,
         default=os.environ.get("CHECKPOINT"),
@@ -371,6 +377,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--log-every", type=int, default=20)
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
+    args.checkpoint = args.checkpoint or args.checkpoint_path
     if args.checkpoint is None:
         parser.error("--checkpoint or CHECKPOINT is required")
     if args.max_episodes < 0 or args.max_frames_per_episode < 0 or args.num_workers < 0:
