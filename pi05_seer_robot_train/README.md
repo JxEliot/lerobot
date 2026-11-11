@@ -55,6 +55,32 @@ variables, including `BATCH_SIZE`, `NUM_GPUS`, `GRAD_ACCUM_STEPS`, `STEPS`, `SAV
 `NUM_WORKERS`, and `IMAGE_AUGMENTATION`. The four positional arguments override mode, steps, batch per
 GPU, and save frequency. `OUTPUT_BASE` and `OUTPUT_DIR` control checkpoint locations.
 
+## Multi-task training and MLflow
+
+`train_multitask_full.sh` starts from the PI05 base model with RTC training enabled;
+`train_multitask_from_rtc.sh` starts a new optimizer and schedule from the saved RTC policy weights.
+Both use RTC action-prefix conditioning (`RTC_TRAIN_MAX_DELAY=10` by default) and all 243 episodes in
+`lerobot_ee_multitask_v3` (`EVAL_SPLIT=0`), keep full-model fine-tuning enabled, and write training
+metrics to MLflow every `LOG_FREQ` steps. There is no held-out evaluation loss in these runs.
+
+```bash
+NUM_GPUS=2 bash pi05_seer_robot_train/train_multitask_full.sh full 10000 64 0
+NUM_GPUS=2 bash pi05_seer_robot_train/train_multitask_from_rtc.sh full 10000 64 0
+```
+
+On the server, install `requirements-mlflow.txt` into `/root/venvs/lerobot-pi05` before running
+either launcher. The default experiment is `seer-pi05-multitask`; the SQLite store and artifacts
+live under `/mnt/cfs/usr/jixiang/vla_learning/mlflow/pi05_seer_robot_train`. MLflow records loss,
+gradient norm, learning rate, throughput, timing, and GPU memory, plus the training configuration
+for comparing runs. MLflow does not store or manage model checkpoints; those remain in the normal
+checkpoint folder.
+Set `MLFLOW_HOME`, `MLFLOW_TRACKING_URI`, `MLFLOW_ARTIFACT_ROOT`, or `MLFLOW_EXPERIMENT_NAME` to
+override these defaults.
+
+To open the dashboard, start `bash pi05_seer_robot_train/mlflow_ui.sh` on the server, then forward
+the server's local port with `ssh -p 5850 -L 5000:127.0.0.1:5000 root@106.12.144.208` and open
+`http://127.0.0.1:5000` in a browser. Change `MLFLOW_PORT` when port 5000 is in use.
+
 Visual augmentation is photometric only: brightness and contrast vary from 0.9 to 1.1, sharpness
 from 0.8 to 1.2, with up to two transforms per image. It does not alter camera geometry.
 
@@ -75,7 +101,8 @@ bash pi05_seer_robot_train/infer_offline.sh \
   --max-frames-per-episode 100
 ```
 
-Each run writes one organized result directory under the training run's `inference_results/` folder.
+Each run writes one organized result directory under `pi05_seer_robot_train/inference_results/rtc/`
+or `pi05_seer_robot_train/inference_results/no-rtc/`, matching the checkpoint type.
 It contains `predictions.csv`, `summary.json`, a compressed `episode_<index>.npz` for each tested
 episode, and a `trajectory_episode_<index>.png` action comparison plot. The plot follows the GR00T
 validation layout: one panel per action dimension, dataset action overlaid with PI05 prediction, and
@@ -89,11 +116,44 @@ bash pi05_seer_robot_train/infer_offline.sh \
   pi05_seer_robot_train/checkpoints/no-rtc/full-20261103-185856 \
   --episodes 114 \
   --max-frames-per-episode 0 \
-  --output-dir pi05_seer_robot_train/checkpoints/no-rtc/full-20261103-185856/inference_results/episode-114
+  --output-dir pi05_seer_robot_train/inference_results/no-rtc/episode-114
 ```
 
 `DATASET_ROOT`, `DATASET_REPO_ID`, `PYTHON_BIN`, and `VENV_ROOT` can be overridden in the shell
 environment or through `ENV_FILE`.
+
+## Real-robot inference server
+
+The HTTP server keeps the request/response protocol used by the earlier Seer PI05 server and
+loads the v3 checkpoint processors. It does not open the training dataset. It validates incoming
+state and images, converts quaternion EEF state to rotation vectors, applies the saved processor
+pair, and returns absolute XYZ+rotation-vector targets in `action_chunk`.
+
+Start one server on the GPU host:
+
+```bash
+bash pi05_seer_robot_train/run_pi05_inference_server.sh
+```
+
+That script defaults to the trained-RTC checkpoint and RTC mode `trained`. The alternate launchers
+select `guided` RTC or plain inference:
+
+```bash
+bash pi05_seer_robot_train/run_pi05_inference_server_guided.sh
+bash pi05_seer_robot_train/run_pi05_inference_server_no_rtc.sh
+```
+
+The service listens on `0.0.0.0:18080`; the robot controller should use
+`http://<inference-server-ip>:18080/v1/pi05/action` and `/health` for readiness. The action endpoint
+uses the existing `seer.model_inference.request.v1` request schema and returns a 50-step `action_chunk`.
+For trained RTC, the client must pass the previous absolute action chunk, measured
+`inference_delay`, and the matching `execution_horizon` in `pi05_rtc`. Defaults are a 25-step
+execution horizon for trained RTC and 15 for guided RTC. Override `CHECKPOINT`, `PORT`,
+`EXECUTION_HORIZON`, `WARMUP_STEPS`, or other launcher settings through the environment or `ENV_FILE`.
+
+The server validates checkpoint processors and warms up with a synthetic request before opening
+the HTTP listener. It does not connect to or command the robot; the existing robot-side client remains
+responsible for connecting the service to the arm controller.
 
 ## Resume
 

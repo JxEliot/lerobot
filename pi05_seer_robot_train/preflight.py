@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 
@@ -36,6 +37,17 @@ def main() -> None:
     for camera in ("observation.images.head", "observation.images.left_wrist", "observation.images.right_wrist"):
         if camera not in cameras:
             raise SystemExit(f"Expected Seer camera feature is missing: {camera}")
+
+    if os.environ.get("MLFLOW_ENABLE", "false").lower() in {"1", "true", "yes"}:
+        try:
+            import mlflow
+        except ImportError as error:
+            raise SystemExit("MLflow logging is enabled but mlflow is not installed in this environment") from error
+        if not os.environ.get("MLFLOW_TRACKING_URI"):
+            raise SystemExit("MLFLOW_TRACKING_URI must be set when MLFLOW_ENABLE=true")
+        if not os.environ.get("MLFLOW_ARTIFACT_ROOT"):
+            raise SystemExit("MLFLOW_ARTIFACT_ROOT must be set when MLFLOW_ENABLE=true")
+        print(f"MLflow: {mlflow.__version__}, tracking URI configured")
 
     if not (args.model_root / "config.json").is_file():
         raise SystemExit(f"PI05 config not found: {args.model_root / 'config.json'}")

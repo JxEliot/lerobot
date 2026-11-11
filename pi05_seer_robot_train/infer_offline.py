@@ -22,11 +22,7 @@ from torch.utils.data import DataLoader
 from lerobot.configs import PreTrainedConfig
 from lerobot.datasets import LeRobotDataset, LeRobotDatasetMetadata
 from lerobot.policies import get_policy_class, make_pre_post_processors
-from lerobot.processor import (
-    bind_relative_anchor,
-    policy_output_to_transition,
-    transition_to_policy_action,
-)
+from lerobot.processor import policy_action_to_transition, transition_to_policy_action
 
 from pi05_seer_robot_train.seer_pi05.data import (
     ACTION_KEY,
@@ -35,6 +31,7 @@ from pi05_seer_robot_train.seer_pi05.data import (
     _inspect_video_safe_rows,
     _safe_relative_indices,
 )
+from pi05_seer_robot_train.seer_pi05.processors import bind_seer_relative_anchor
 
 
 def _resolve_checkpoint(path: Path) -> Path:
@@ -116,11 +113,8 @@ def _resolve_output_dir(output_dir: Path | None, checkpoint: Path) -> Path:
     if output_dir is not None:
         return output_dir.expanduser().resolve()
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    run_dir = next(
-        (parent.parent for parent in checkpoint.parents if parent.name == "checkpoints"),
-        checkpoint.parent,
-    )
-    return run_dir / "inference_results" / f"validation-{stamp}"
+    mode = next((part for part in checkpoint.parts if part in {"rtc", "no-rtc"}), "other")
+    return Path(__file__).resolve().parent / "inference_results" / mode / f"validation-{stamp}"
 
 
 def _metrics(rows: list[dict[str, Any]]) -> dict[str, float | int]:
@@ -167,9 +161,8 @@ def _plot_episode_trajectory(
         squeeze=False,
     )
     figure.suptitle(
-        f"Episode {episode} | Dataset action vs PI05 prediction\n{rows[0]['task']}",
+        f"Episode {episode} | Absolute EEF action: dataset vs PI05\n{rows[0]['task']}",
         fontsize=16,
-        color="blue",
     )
     inference_indices = np.arange(0, len(rows), max(1, action_refresh_interval))
 
@@ -179,10 +172,10 @@ def _plot_episode_trajectory(
         axis.plot(frame_indices, prediction[:, action_index], label="PI05 prediction")
         axis.scatter(
             frame_indices[inference_indices],
-            target[inference_indices, action_index],
+            prediction[inference_indices, action_index],
             color="red",
             s=18,
-            label="Inference point" if action_index == 0 else None,
+            label="New action chunk" if action_index == 0 else None,
             zorder=3,
         )
         axis.set_title(f"Action {action_index}: {action_name}")
@@ -190,7 +183,7 @@ def _plot_episode_trajectory(
         axis.legend(fontsize=8, loc="best")
 
     axes[-1, 0].set_xlabel("Frame index")
-    figure.tight_layout(rect=(0, 0, 1, 0.995))
+    figure.tight_layout(rect=(0, 0, 1, 0.975))
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     figure.savefig(output_path, dpi=100)
@@ -270,7 +263,10 @@ def _run(args: argparse.Namespace) -> None:
         logging.warning("Skipping missing video-tail frames in episodes: %s", truncation_causes)
 
     # Import registers Seer-specific serialized processor steps before loading pipelines.
-    from pi05_seer_robot_train.seer_pi05 import processors as _seer_processors  # noqa: F401
+    from pi05_seer_robot_train.seer_pi05.processors import (
+        SeerEefAbsoluteActionsProcessorStep,
+        SeerEefRelativeActionsProcessorStep,
+    )
 
     policy_class = get_policy_class(policy_config.type)
     policy = policy_class.from_pretrained(
@@ -285,8 +281,22 @@ def _run(args: argparse.Namespace) -> None:
         pretrained_path=checkpoint,
         preprocessor_overrides={"device_processor": {"device": device}},
     )
-    relative_step = bind_relative_anchor(policy, preprocessor)
-    logging.info("Relative EEF action processor bound: %s", relative_step is not None)
+    relative_step = bind_seer_relative_anchor(policy, preprocessor)
+    absolute_step = next(
+        (step for step in postprocessor.steps if isinstance(step, SeerEefAbsoluteActionsProcessorStep)),
+        None,
+    )
+    if (
+        not isinstance(relative_step, SeerEefRelativeActionsProcessorStep)
+        or absolute_step is None
+        or not absolute_step.enabled
+        or absolute_step.relative_step is not relative_step
+    ):
+        raise RuntimeError(
+            "Checkpoint must have connected, enabled Seer relative and absolute EEF processors "
+            "to compare predictions with absolute dataset actions"
+        )
+    logging.info("Relative EEF action processor and absolute inverse are connected")
 
     loader = DataLoader(
         inference_dataset,
@@ -338,7 +348,7 @@ def _run(args: argparse.Namespace) -> None:
             processed = preprocessor(batch)
             with torch.inference_mode():
                 action = policy.select_action(processed)
-            action = transition_to_policy_action(policy_output_to_transition(action))
+            action = transition_to_policy_action(policy_action_to_transition(action))
             prediction = postprocessor(action)[0].detach().cpu().numpy().astype(np.float32)
             if prediction.shape != (14,) or target.shape != (14,):
                 raise ValueError(
@@ -484,7 +494,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        help="result directory; defaults to <training run>/inference_results/validation-<timestamp>",
+        help="result directory; defaults to <pi05_seer_robot_train>/inference_results/<mode>/validation-<timestamp>",
     )
     parser.add_argument("--no-plots", action="store_true", help="skip per-episode trajectory PNG generation")
     args = parser.parse_args()

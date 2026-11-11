@@ -9,6 +9,7 @@ from pi05_seer_robot_train.seer_pi05.processors import (
     _compact_action,
     _compact_state,
     _relative_actions,
+    bind_seer_relative_anchor,
 )
 
 
@@ -64,7 +65,6 @@ def test_torch_relative_action_conversion_round_trips():
 
 def test_inference_keeps_chunk_anchor_until_queued_actions_are_drained():
     from lerobot.lerobot_types import TransitionKey
-    from lerobot.processor import bind_relative_anchor
     from lerobot.utils.constants import OBS_STATE
 
     class FakePolicy:
@@ -89,7 +89,7 @@ def test_inference_keeps_chunk_anchor_until_queued_actions_are_drained():
     absolute_step = SeerEefAbsoluteActionsProcessorStep(relative_step=relative_step)
     policy = FakePolicy()
     pipeline = type("Pipeline", (), {"steps": [relative_step]})()
-    assert bind_relative_anchor(policy, pipeline) is relative_step
+    assert bind_seer_relative_anchor(policy, pipeline) is relative_step
 
     relative_step({TransitionKey.OBSERVATION: {OBS_STATE: state_at_prediction}})
     relative_target = _relative_actions(state_at_prediction, absolute_target)
@@ -103,6 +103,43 @@ def test_inference_keeps_chunk_anchor_until_queued_actions_are_drained():
     policy.queued_actions = 0
     relative_step({TransitionKey.OBSERVATION: {OBS_STATE: state_after_first_action}})
     torch.testing.assert_close(relative_step.get_cached_state(), state_after_first_action)
+
+
+def test_relative_processor_refreshes_anchor_without_inference_queue():
+    from lerobot.lerobot_types import TransitionKey
+    from lerobot.utils.constants import OBS_STATE
+
+    step = SeerEefRelativeActionsProcessorStep()
+    first_state = torch.zeros((1, 30), dtype=torch.float32)
+    first_state[:, 18] = 1.0
+    next_state = first_state.clone()
+    next_state[:, 18] = 2.0
+
+    step({TransitionKey.OBSERVATION: {OBS_STATE: first_state}})
+    assert step._chunk_in_flight() is False
+    torch.testing.assert_close(step.get_cached_state(), first_state)
+
+    step({TransitionKey.OBSERVATION: {OBS_STATE: next_state}})
+    torch.testing.assert_close(step.get_cached_state(), next_state)
+
+
+def test_anchor_binding_falls_back_to_legacy_pi05_action_queue():
+    from collections import deque
+
+    class LegacyPolicy:
+        def __init__(self):
+            self._action_queue = deque()
+
+    step = SeerEefRelativeActionsProcessorStep()
+    pipeline = type("Pipeline", (), {"steps": [step]})()
+    policy = LegacyPolicy()
+
+    assert bind_seer_relative_anchor(policy, pipeline) is step
+    assert step._chunk_in_flight() is False
+    policy._action_queue.append(torch.zeros(1))
+    assert step._chunk_in_flight() is True
+    policy._action_queue.clear()
+    assert step._chunk_in_flight() is False
 
 
 def test_absolute_action_postprocessor_aligns_cached_state_device():

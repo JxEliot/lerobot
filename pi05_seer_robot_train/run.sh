@@ -5,7 +5,7 @@ MODE="${1:-full}"
 case "${MODE}" in
   check) DEFAULT_STEPS=0; DEFAULT_BATCH=1; DEFAULT_SAVE_FREQ=0 ;;
   smoke) DEFAULT_STEPS=2; DEFAULT_BATCH=1; DEFAULT_SAVE_FREQ=0 ;;
-  full) DEFAULT_STEPS=10000; DEFAULT_BATCH=8; DEFAULT_SAVE_FREQ=0 ;;
+  full) DEFAULT_STEPS=10000; DEFAULT_BATCH=64; DEFAULT_SAVE_FREQ=0 ;;
   *)
     echo "Usage: $0 [check|smoke|full] [steps] [batch-per-GPU] [save-frequency]" >&2
     exit 2
@@ -32,7 +32,7 @@ MODEL_ROOT="${MODEL_ROOT:-/mnt/cfs/usr/jixiang/hf_models/pi05_base}"
 TOKENIZER_ROOT="${TOKENIZER_ROOT:-/mnt/cfs/usr/jixiang/hf_models/paligemma-3b-pt-224-tokenizer}"
 OUTPUT_BASE="${OUTPUT_BASE:-${PACKAGE_ROOT}/checkpoints}"
 DATASET_REPO_ID="${DATASET_REPO_ID:-seer_robot/lerobot_ee}"
-NUM_GPUS="${NUM_GPUS:-1}"
+NUM_GPUS="${NUM_GPUS:-4}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
 GRAD_ACCUM_STEPS="${GRAD_ACCUM_STEPS:-1}"
 N_ACTION_STEPS="${N_ACTION_STEPS:-10}"
@@ -112,13 +112,37 @@ echo "  steps: ${STEPS}; chunk=${CHUNK_SIZE}; action steps=${N_ACTION_STEPS}; RT
 echo "  optimizer LR: ${OPTIMIZER_LR}; full fine-tuning: vision encoder and action expert unfrozen"
 echo "  image augmentation: ${IMAGE_AUGMENTATION} (brightness, contrast, sharpness)"
 
+read -r LOGGER_FIELD IMAGE_BACKEND_SUPPORTED < <(
+  "${PYTHON_BIN}" - <<'PY'
+from dataclasses import fields
+
+from lerobot.configs.train import TrainPipelineConfig
+from lerobot.transforms import ImageTransformsConfig
+
+config_fields = {field.name for field in fields(TrainPipelineConfig)}
+logger_field = "trackio" if "trackio" in config_fields else "wandb" if "wandb" in config_fields else None
+if logger_field is None:
+    raise RuntimeError("LeRobot training config has no supported experiment logger")
+image_fields = {field.name for field in fields(ImageTransformsConfig)}
+print(logger_field, int("backend" in image_fields))
+PY
+)
+logger_args=("--${LOGGER_FIELD}.enable=${TRACKIO_ENABLE}" "--${LOGGER_FIELD}.project=seer-pi05-eef")
+if [[ "${LOGGER_FIELD}" == wandb ]]; then
+  logger_args+=(--wandb.disable_artifact=true)
+fi
+image_backend_args=()
+if [[ "${IMAGE_BACKEND_SUPPORTED}" == 1 ]]; then
+  image_backend_args+=(--dataset.image_transforms.backend=gpu)
+fi
+
 "${TORCHRUN}" --standalone --nproc-per-node="${NUM_GPUS}" "${PACKAGE_ROOT}/train.py" \
   --dataset.repo_id="${DATASET_REPO_ID}" \
   --dataset.root="${DATASET_ROOT}" \
   --dataset.streaming=false \
   --dataset.eval_split="${EVAL_SPLIT}" \
   --dataset.image_transforms.enable="${IMAGE_AUGMENTATION}" \
-  --dataset.image_transforms.backend=gpu \
+  "${image_backend_args[@]}" \
   --dataset.image_transforms.max_num_transforms=2 \
   --dataset.image_transforms.random_order=false \
   --dataset.image_transforms.tfs="${IMAGE_TRANSFORMS}" \
@@ -150,8 +174,7 @@ echo "  image augmentation: ${IMAGE_AUGMENTATION} (brightness, contrast, sharpne
   --eval_steps="${EVAL_STEPS}" \
   --seed=1000 \
   --accelerator.gradient_accumulation.steps="${GRAD_ACCUM_STEPS}" \
-  --trackio.enable="${TRACKIO_ENABLE}" \
-  --trackio.project=seer-pi05-eef
+  "${logger_args[@]}"
 
 if [[ "${KEEP_CHECKPOINTS}" =~ ^[1-9][0-9]*$ ]]; then
   mapfile -t checkpoint_dirs < <(

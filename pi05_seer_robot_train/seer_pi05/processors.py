@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 
 import torch
@@ -168,6 +169,13 @@ class SeerEefRelativeActionsProcessorStep(RelativeActionsProcessorStep):
     """Apply GR00T-style SE(3) relative targets and retain the inference anchor."""
 
     enabled: bool = True
+    _seer_count_queued_actions: Callable[[], int] | None = field(default=None, init=False, repr=False)
+
+    def bind_action_queue(self, count_queued_actions: Callable[[], int] | None) -> None:
+        self._seer_count_queued_actions = count_queued_actions
+
+    def _chunk_in_flight(self) -> bool:
+        return self._seer_count_queued_actions is not None and self._seer_count_queued_actions() > 0
 
     def __call__(self, transition: EnvTransition) -> EnvTransition:
         result = transition.copy()
@@ -198,6 +206,30 @@ class SeerEefRelativeActionsProcessorStep(RelativeActionsProcessorStep):
 
     def get_config(self) -> dict[str, Any]:
         return {"enabled": self.enabled}
+
+
+def bind_seer_relative_anchor(
+    policy: Any, pipeline: PolicyProcessorPipeline[Any, Any]
+) -> SeerEefRelativeActionsProcessorStep | None:
+    """Bind the EEF anchor to the policy action queue across LeRobot versions."""
+    step = next(
+        (
+            candidate
+            for candidate in getattr(pipeline, "steps", ())
+            if isinstance(candidate, SeerEefRelativeActionsProcessorStep) and candidate.enabled
+        ),
+        None,
+    )
+    if step is None:
+        return None
+
+    count_queued_actions = getattr(policy, "count_queued_actions", None)
+    if not callable(count_queued_actions):
+        action_queue = getattr(policy, "_action_queue", None)
+        if action_queue is not None:
+            count_queued_actions = lambda: len(action_queue)
+    step.bind_action_queue(count_queued_actions if callable(count_queued_actions) else None)
+    return step
 
 
 @ProcessorStepRegistry.register(name="seer_eef_absolute_actions_processor")

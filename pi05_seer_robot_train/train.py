@@ -43,6 +43,15 @@ def _make_datasets(cfg):
 
 
 def main() -> None:
+    if os.environ.get("MLFLOW_ENABLE", "false").lower() in {"1", "true", "yes"}:
+        from pi05_seer_robot_train.mlflow_logger import MLflowLogger
+
+        if hasattr(lerobot_train, "TrackioLogger"):
+            lerobot_train.TrackioLogger = MLflowLogger
+        elif hasattr(lerobot_train, "WandBLogger"):
+            lerobot_train.WandBLogger = MLflowLogger
+        else:
+            raise RuntimeError("Unsupported LeRobot trainer: no TrackioLogger or WandBLogger hook found")
     lerobot_train.make_train_eval_datasets = _make_datasets
     lerobot_train.make_pre_post_processors = _make_processors
     lerobot_train.main()
