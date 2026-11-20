@@ -41,7 +41,11 @@ else
   STEPS="${2:-${DEFAULT_STEPS}}"
   BATCH_SIZE="${3:-${DEFAULT_BATCH}}"
 fi
-SAVE_FREQ="${4:-${SAVE_FREQ:-${DEFAULT_SAVE_FREQ}}}"
+if [[ "${MODE}" == full ]]; then
+  SAVE_FREQ="${4:-${SAVE_FREQ:-${DEFAULT_SAVE_FREQ}}}"
+else
+  SAVE_FREQ="${4:-${DEFAULT_SAVE_FREQ}}"
+fi
 LEROBOT_ROOT="${LEROBOT_ROOT:-${REPOSITORY_ROOT}}"
 VENV_ROOT="${VENV_ROOT:-/root/venvs/lerobot-pi05}"
 PYTHON_BIN="${PYTHON_BIN:-${VENV_ROOT}/bin/python}"

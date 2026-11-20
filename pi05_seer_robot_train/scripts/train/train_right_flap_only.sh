@@ -67,7 +67,11 @@ SCHEDULER_WARMUP_STEPS="${SCHEDULER_WARMUP_STEPS:-1000}"
 SCHEDULER_DECAY_STEPS="${SCHEDULER_DECAY_STEPS:-30000}"
 SCHEDULER_DECAY_LR="${SCHEDULER_DECAY_LR:-2.5e-6}"
 LOG_FREQ="${LOG_FREQ:-20}"
-SAVE_FREQ="${4:-${SAVE_FREQ:-${DEFAULT_SAVE_FREQ}}}"
+if [[ "${MODE}" == full ]]; then
+  SAVE_FREQ="${4:-${SAVE_FREQ:-${DEFAULT_SAVE_FREQ}}}"
+else
+  SAVE_FREQ="${4:-${DEFAULT_SAVE_FREQ}}"
+fi
 IMAGE_AUGMENTATION="${IMAGE_AUGMENTATION:-true}"
 JOB_NAME="${JOB_NAME:-seer-pi05-right-flap-only-full-rtc}"
 IMAGE_TRANSFORMS='{"brightness":{"weight":1.0,"type":"ColorJitter","kwargs":{"brightness":[0.9,1.1]}},"contrast":{"weight":1.0,"type":"ColorJitter","kwargs":{"contrast":[0.9,1.1]}},"sharpness":{"weight":1.0,"type":"SharpnessJitter","kwargs":{"sharpness":[0.8,1.2]}}}'
