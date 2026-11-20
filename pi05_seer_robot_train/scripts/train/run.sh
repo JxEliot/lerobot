@@ -5,7 +5,7 @@ MODE="${1:-full}"
 case "${MODE}" in
   check) DEFAULT_STEPS=0; DEFAULT_BATCH=1; DEFAULT_SAVE_FREQ=0 ;;
   smoke) DEFAULT_STEPS=2; DEFAULT_BATCH=1; DEFAULT_SAVE_FREQ=0 ;;
-  full) DEFAULT_STEPS=10000; DEFAULT_BATCH=64; DEFAULT_SAVE_FREQ=0 ;;
+  full) DEFAULT_STEPS=10000; DEFAULT_BATCH=64; DEFAULT_SAVE_FREQ=5000 ;;
   *)
     echo "Usage: $0 [check|smoke|full] [steps] [batch-per-GPU] [save-frequency]" >&2
     exit 2
@@ -65,7 +65,6 @@ MLFLOW_ENABLE="${MLFLOW_ENABLE:-true}"
 MLFLOW_EXPERIMENT_NAME="${MLFLOW_EXPERIMENT_NAME:-seer-pi05-eef}"
 MLFLOW_RUN_NAME_PREFIX="${MLFLOW_RUN_NAME_PREFIX:-seer-pi05}"
 JOB_NAME="${JOB_NAME:-seer-pi05-${TRAINING_PROFILE}-${MODE}}"
-KEEP_CHECKPOINTS="${KEEP_CHECKPOINTS:-2}"
 IMAGE_TRANSFORMS='{"brightness":{"weight":1.0,"type":"ColorJitter","kwargs":{"brightness":[0.9,1.1]}},"contrast":{"weight":1.0,"type":"ColorJitter","kwargs":{"contrast":[0.9,1.1]}},"sharpness":{"weight":1.0,"type":"SharpnessJitter","kwargs":{"sharpness":[0.8,1.2]}}}'
 
 export PYTHONPATH="${LEROBOT_ROOT}/src:${REPOSITORY_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
@@ -188,14 +187,3 @@ fi
   --seed=1000 \
   --accelerator.gradient_accumulation.steps="${GRAD_ACCUM_STEPS}" \
   "${logger_args[@]}"
-
-if [[ "${KEEP_CHECKPOINTS}" =~ ^[1-9][0-9]*$ ]]; then
-  mapfile -t checkpoint_dirs < <(
-    find "${RUN_OUTPUT}/checkpoints" -mindepth 1 -maxdepth 1 -type d -name '[0-9]*' -printf '%f\n' 2>/dev/null | sort -n
-  )
-  if (( ${#checkpoint_dirs[@]} > KEEP_CHECKPOINTS )); then
-    for old in "${checkpoint_dirs[@]:0:${#checkpoint_dirs[@]}-KEEP_CHECKPOINTS}"; do
-      rm -rf -- "${RUN_OUTPUT}/checkpoints/${old}"
-    done
-  fi
-fi

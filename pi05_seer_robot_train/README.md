@@ -47,15 +47,17 @@ needed. `ENV_FILE` remains available for dataset and training settings.
 
 ```bash
 cd /mnt/cfs/usr/jixiang/vla_learning/lerobot
-ENV_FILE=pi05_seer_robot_train/config/server.env bash pi05_seer_robot_train/scripts/train/train.sh full 10000 8 0
-ENV_FILE=pi05_seer_robot_train/config/server.env bash pi05_seer_robot_train/scripts/train/train_rtc.sh full 10000 8 0
+ENV_FILE=pi05_seer_robot_train/config/server.env bash pi05_seer_robot_train/scripts/train/train.sh full 60000 8
+ENV_FILE=pi05_seer_robot_train/config/server.env bash pi05_seer_robot_train/scripts/train/train_rtc.sh full 60000 8
 ```
 
 Both scripts accept `[check|smoke|full] [steps] [batch-per-GPU] [save-frequency]`. `check` validates
 dataset metadata, local model/tokenizer assets, GPU count, and bfloat16 support. `smoke` runs two
-optimizer steps. `full` defaults to 10,000 steps, batch size 64 per GPU, and saves the final checkpoint
-only. A periodic checkpoint interval can be passed as the fourth argument or through `SAVE_FREQ`.
-Full PI05 checkpoints require substantial disk space.
+optimizer steps. `full` defaults to 10,000 steps and batch size 64 per GPU. It saves a checkpoint
+every 5,000 steps by default, as well as at the final step. Set `SAVE_FREQ` in `config/server.env`
+to change the interval; `SAVE_FREQ=0` disables periodic saves. Checkpoints are kept under the run's
+`checkpoints/` directory, and `checkpoints/last` points to the newest completed save. No old
+checkpoints are pruned. Full PI05 checkpoints require substantial disk space.
 
 `train.sh` disables trained RTC prefixes. `train_rtc.sh` uses the previous branch's RTC training
 setting: `RTC_TRAIN_MAX_DELAY=10`, with `chunk_size=50` and `n_action_steps=10` by default. At 20 FPS,
@@ -79,8 +81,8 @@ Both use RTC action-prefix conditioning (`RTC_TRAIN_MAX_DELAY=10` by default) an
 metrics to MLflow every `LOG_FREQ` steps. There is no held-out evaluation loss in these runs.
 
 ```bash
-ENV_FILE=pi05_seer_robot_train/config/server.env bash pi05_seer_robot_train/scripts/train/train_multitask_full.sh full 10000 64 0
-ENV_FILE=pi05_seer_robot_train/config/server.env bash pi05_seer_robot_train/scripts/train/train_multitask_from_rtc.sh full 10000 64 0
+ENV_FILE=pi05_seer_robot_train/config/server.env bash pi05_seer_robot_train/scripts/train/train_multitask_full.sh full 60000 64
+ENV_FILE=pi05_seer_robot_train/config/server.env bash pi05_seer_robot_train/scripts/train/train_multitask_from_rtc.sh full 60000 64
 ```
 
 MLflow logging requires `mlflow>=3.0,<4` in `/root/venvs/lerobot-pi05` on the training server. Training
@@ -193,7 +195,18 @@ torchrun --standalone --nproc-per-node=1 pi05_seer_robot_train/train.py \
 ```
 
 The launcher patch restores the saved custom processor pipelines on resume, so the normalization
-statistics bundled with the checkpoint remain authoritative.
+statistics bundled with the checkpoint remain authoritative. For a convenience launcher that
+automatically selects the latest checkpoint and preserves the original run directory, use:
+
+```bash
+ENV_FILE=pi05_seer_robot_train/config/server.env bash pi05_seer_robot_train/scripts/train/resume_training.sh pi05_seer_robot_train/checkpoints/multitask-full-v1/full-20261118-071558 60000
+```
+
+The target is the total training step, not the additional number of steps. The optional third
+argument selects `last` (the default) or a saved step, such as `010000`. The script uses the
+checkpoint's recorded GPU topology and the configured `SAVE_FREQ`. An interruption leaves the
+newest completed checkpoint available; work since that save must be repeated. Earlier checkpoints
+are retained.
 
 For inference through the stock LeRobot CLI, load the custom processor registry before opening the
 checkpoint by adding:

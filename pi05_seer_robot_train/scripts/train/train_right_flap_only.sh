@@ -7,7 +7,7 @@ MODE="${1:-full}"
 case "${MODE}" in
   check) DEFAULT_STEPS=0; DEFAULT_BATCH=64; DEFAULT_SAVE_FREQ=0 ;;
   smoke) DEFAULT_STEPS=2; DEFAULT_BATCH=1; DEFAULT_SAVE_FREQ=0 ;;
-  full) DEFAULT_BATCH=64; DEFAULT_SAVE_FREQ=2000 ;;
+  full) DEFAULT_BATCH=64; DEFAULT_SAVE_FREQ=5000 ;;
   *)
     echo "Usage: $0 [check|smoke|full] [steps] [batch-per-GPU] [save-frequency]" >&2
     exit 2
