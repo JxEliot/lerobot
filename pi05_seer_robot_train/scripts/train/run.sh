@@ -5,6 +5,9 @@ MODE="${1:-full}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PACKAGE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 REPOSITORY_ROOT="$(cd "${PACKAGE_ROOT}/.." && pwd)"
+if [[ -z "${ENV_FILE:-}" && -f "${PACKAGE_ROOT}/config/server.env" ]]; then
+  ENV_FILE="${PACKAGE_ROOT}/config/server.env"
+fi
 if [[ -n "${ENV_FILE:-}" ]]; then
   [[ -f "${ENV_FILE}" ]] || { echo "Environment file not found: ${ENV_FILE}" >&2; exit 1; }
   set -a
@@ -106,7 +109,8 @@ fail() {
 (( N_ACTION_STEPS <= CHUNK_SIZE )) || fail "N_ACTION_STEPS cannot exceed CHUNK_SIZE"
 (( RTC_TRAIN_MAX_DELAY < CHUNK_SIZE )) || fail "RTC_TRAIN_MAX_DELAY must be smaller than CHUNK_SIZE"
 if [[ "${MLFLOW_ENABLE,,}" =~ ^(1|true|yes)$ ]]; then
-  [[ -n "${MLFLOW_TRACKING_URI:-}" ]] || fail "Set MLFLOW_TRACKING_URI to the official MLflow tracking server"
+  [[ -n "${MLFLOW_TRACKING_URI:-}" ]] || fail \
+    "MLFLOW_ENABLE=true but MLFLOW_TRACKING_URI is empty. Ensure ${PACKAGE_ROOT}/config/server.env exists or export MLFLOW_TRACKING_URI."
 fi
 if [[ "${TRAINING_PROFILE}" == rtc ]] && (( RTC_TRAIN_MAX_DELAY == 0 )); then
   fail "RTC_TRAIN_MAX_DELAY must be greater than zero for train_rtc.sh"

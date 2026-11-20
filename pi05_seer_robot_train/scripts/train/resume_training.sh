@@ -16,6 +16,9 @@ RUN_DIR_INPUT="$1"
 TARGET_STEPS="$2"
 CHECKPOINT_SELECTOR="${3:-last}"
 
+if [[ -z "${ENV_FILE:-}" && -f "${PACKAGE_ROOT}/config/server.env" ]]; then
+  ENV_FILE="${PACKAGE_ROOT}/config/server.env"
+fi
 if [[ -n "${ENV_FILE:-}" ]]; then
   [[ -f "${ENV_FILE}" ]] || { echo "Environment file not found: ${ENV_FILE}" >&2; exit 1; }
   set -a

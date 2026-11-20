@@ -23,6 +23,9 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PACKAGE_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 REPOSITORY_ROOT="$(cd -- "${PACKAGE_ROOT}/.." && pwd)"
 
+if [[ -z "${ENV_FILE:-}" && -f "${PACKAGE_ROOT}/config/server.env" ]]; then
+  ENV_FILE="${PACKAGE_ROOT}/config/server.env"
+fi
 if [[ -n "${ENV_FILE:-}" ]]; then
   [[ -f "${ENV_FILE}" ]] || { echo "Environment file not found: ${ENV_FILE}" >&2; exit 1; }
   set -a

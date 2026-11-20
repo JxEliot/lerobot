@@ -43,7 +43,8 @@ are never changed.
 
 Run from a clean checkout of `feat/pi-train`. The launch scripts default to the server virtual
 environment at `/root/venvs/lerobot-pi05`; override `VENV_ROOT`, `PYTHON_BIN`, or `TORCHRUN` when
-needed. `ENV_FILE` remains available for dataset and training settings.
+needed. Launchers automatically load `config/server.env` when that file exists; set `ENV_FILE` to
+select a different configuration.
 
 ```bash
 cd /mnt/cfs/usr/jixiang/vla_learning/lerobot

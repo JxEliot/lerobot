@@ -25,7 +25,8 @@ right-flap 脚本默认按选中数据量计算匹配步数。所有入口仍支
 `[check|smoke|full] [steps] [batch-per-GPU] [save-frequency] [num-gpus]`。
 `check` 只做预检查；`smoke` 固定默认训练两步、每卡 batch 1。
 
-先在 `config/server.env` 设置 `SAVE_FREQ`（默认 5000）、`LOG_FREQ`、MLflow 等运行环境参数，
+先在 `config/server.env` 设置 `SAVE_FREQ`（默认 5000）、`LOG_FREQ`、MLflow 等运行环境参数；
+启动器会自动读取该文件，也可以通过 `ENV_FILE` 显式选择另一个配置文件。
 训练步数、GPU 数、batch size 则在各训练脚本顶部配置。例如：
 
 ```bash
