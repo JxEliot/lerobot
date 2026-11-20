@@ -16,12 +16,17 @@ Python 入口、`config/`、`checkpoints/` 和 `inference_results/` 仍在 `pi05
 | [train_right_flap_only.sh](train/train_right_flap_only.sh) | 只选择 `Fold the right flap of the box.` 对应 episode，全量微调并启用 RTC |
 | [run.sh](train/run.sh) | 共享训练启动器：环境检查、训练参数、torchrun 启动 |
 | [resume_training.sh](train/resume_training.sh) | 从某个 run 的 `last` 或指定步数 checkpoint 恢复完整训练状态 |
+| [train_template.sh](train/train_template.sh) | 可复制的新实验模板，在文件顶部配置训练集、步数、GPU 数和每卡 batch |
 
-训练入口支持 `[check|smoke|full] [steps] [batch-per-GPU] [save-frequency]`。
-`check` 只做预检查；`smoke` 默认训练两步；`full` 正式训练。
-共享启动器的 full 默认 10,000 步、每卡 batch 64；right-flap 脚本默认按选中数据量计算步数。
+`run.sh` 是通用执行器，训练方案脚本在顶部单独配置 `TRAINING_STEPS`、`TRAINING_NUM_GPUS`
+和 `TRAINING_BATCH_SIZE`。复制 [train_template.sh](train/train_template.sh) 并修改配置块，
+就可以新增一套训练方案。现有正式训练方案默认 60,000 步、4 张 GPU、每卡 batch 64；
+right-flap 脚本默认按选中数据量计算匹配步数。所有入口仍支持命令行覆盖：
+`[check|smoke|full] [steps] [batch-per-GPU] [save-frequency] [num-gpus]`。
+`check` 只做预检查；`smoke` 固定默认训练两步、每卡 batch 1。
 
-先在 `config/server.env` 设置 `NUM_GPUS`、`SAVE_FREQ`（默认 5000）、`LOG_FREQ`、MLflow 等参数，然后执行，例如：
+先在 `config/server.env` 设置 `SAVE_FREQ`（默认 5000）、`LOG_FREQ`、MLflow 等运行环境参数，
+训练步数、GPU 数、batch size 则在各训练脚本顶部配置。例如：
 
 ```bash
 cd /mnt/cfs/usr/jixiang/vla_learning/lerobot/pi05_seer_robot_train
@@ -29,12 +34,12 @@ cd /mnt/cfs/usr/jixiang/vla_learning/lerobot/pi05_seer_robot_train
 # 合并数据集：预检查
 ENV_FILE=config/server.env bash scripts/train/train_multitask_full_v1.sh check
 
-# 合并数据集：60,000 步，每卡 batch 64；保存间隔读取 SAVE_FREQ
-ENV_FILE=config/server.env bash scripts/train/train_multitask_full_v1.sh full 60000 64
+# 合并数据集：读取 train_multitask_full_v1.sh 顶部的配置块
+ENV_FILE=config/server.env bash scripts/train/train_multitask_full_v1.sh full
 
 # 原始训练集：普通 / RTC 全量微调
-ENV_FILE=config/server.env bash scripts/train/train.sh full 60000 64
-ENV_FILE=config/server.env bash scripts/train/train_rtc.sh full 60000 64
+ENV_FILE=config/server.env bash scripts/train/train.sh full
+ENV_FILE=config/server.env bash scripts/train/train_rtc.sh full
 
 # 右侧折盖单任务
 ENV_FILE=config/server.env bash scripts/train/train_right_flap_only.sh full
@@ -43,7 +48,8 @@ ENV_FILE=config/server.env bash scripts/train/train_right_flap_only.sh full
 ENV_FILE=config/server.env bash scripts/train/resume_training.sh checkpoints/multitask-full-v1/full-20261118-071558 60000
 ```
 
-环境文件中的赋值会覆盖同名外部环境变量；步数、batch、保存间隔以命令行位置参数优先。
+命令行提供步数、batch、保存间隔或 GPU 数时，会覆盖该方案脚本中的配置。`SAVE_FREQ`
+默认从 `config/server.env` 读取。
 恢复脚本默认读取 `checkpoints/last`，也可以传第三个参数指定保存步数，例如 `010000`。
 所有 checkpoint 都会保留；正常保存后 `checkpoints/last` 会指向最新完整 checkpoint。
 多任务脚本用 `MULTITASK_DATASET_ROOT` / `MULTITASK_DATASET_REPO_ID` 覆盖数据集路径和名称，

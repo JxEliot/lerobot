@@ -2,16 +2,6 @@
 set -Eeuo pipefail
 
 MODE="${1:-full}"
-case "${MODE}" in
-  check) DEFAULT_STEPS=0; DEFAULT_BATCH=1; DEFAULT_SAVE_FREQ=0 ;;
-  smoke) DEFAULT_STEPS=2; DEFAULT_BATCH=1; DEFAULT_SAVE_FREQ=0 ;;
-  full) DEFAULT_STEPS=10000; DEFAULT_BATCH=64; DEFAULT_SAVE_FREQ=5000 ;;
-  *)
-    echo "Usage: $0 [check|smoke|full] [steps] [batch-per-GPU] [save-frequency]" >&2
-    exit 2
-    ;;
-esac
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PACKAGE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 REPOSITORY_ROOT="$(cd "${PACKAGE_ROOT}/.." && pwd)"
@@ -30,8 +20,27 @@ if [[ -f "${MLFLOW_CREDS_FILE}" ]]; then
   set +a
 fi
 
-STEPS="${2:-${STEPS:-${DEFAULT_STEPS}}}"
-BATCH_SIZE="${3:-${BATCH_SIZE:-${DEFAULT_BATCH}}}"
+case "${MODE}" in
+  check) DEFAULT_STEPS=0; DEFAULT_BATCH=1; DEFAULT_SAVE_FREQ=0 ;;
+  smoke) DEFAULT_STEPS=2; DEFAULT_BATCH=1; DEFAULT_SAVE_FREQ=0 ;;
+  full)
+    DEFAULT_STEPS="${TRAINING_STEPS:-10000}"
+    DEFAULT_BATCH="${TRAINING_BATCH_SIZE:-64}"
+    DEFAULT_SAVE_FREQ=5000
+    ;;
+  *)
+    echo "Usage: $0 [check|smoke|full] [steps] [batch-per-GPU] [save-frequency] [num-gpus]" >&2
+    exit 2
+    ;;
+esac
+
+if [[ "${MODE}" == full ]]; then
+  STEPS="${2:-${TRAINING_STEPS:-${STEPS:-${DEFAULT_STEPS}}}}"
+  BATCH_SIZE="${3:-${TRAINING_BATCH_SIZE:-${BATCH_SIZE:-${DEFAULT_BATCH}}}}"
+else
+  STEPS="${2:-${DEFAULT_STEPS}}"
+  BATCH_SIZE="${3:-${DEFAULT_BATCH}}"
+fi
 SAVE_FREQ="${4:-${SAVE_FREQ:-${DEFAULT_SAVE_FREQ}}}"
 LEROBOT_ROOT="${LEROBOT_ROOT:-${REPOSITORY_ROOT}}"
 VENV_ROOT="${VENV_ROOT:-/root/venvs/lerobot-pi05}"
@@ -42,7 +51,7 @@ MODEL_ROOT="${MODEL_ROOT:-/mnt/cfs/usr/jixiang/hf_models/pi05_base}"
 TOKENIZER_ROOT="${TOKENIZER_ROOT:-/mnt/cfs/usr/jixiang/hf_models/paligemma-3b-pt-224-tokenizer}"
 OUTPUT_BASE="${OUTPUT_BASE:-${PACKAGE_ROOT}/checkpoints}"
 DATASET_REPO_ID="${DATASET_REPO_ID:-seer_robot/lerobot_ee}"
-NUM_GPUS="${NUM_GPUS:-1}"
+NUM_GPUS="${5:-${TRAINING_NUM_GPUS:-${NUM_GPUS:-1}}}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
 GRAD_ACCUM_STEPS="${GRAD_ACCUM_STEPS:-1}"
 N_ACTION_STEPS="${N_ACTION_STEPS:-10}"
@@ -76,6 +85,7 @@ export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
 export TOKENIZERS_PARALLELISM=false
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
+export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-1}"
 export MLFLOW_ENABLE MLFLOW_EXPERIMENT_NAME MLFLOW_RUN_NAME_PREFIX
 
 fail() {

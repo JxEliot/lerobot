@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # Fine-tune PI05 on only the right-flap episodes from the Seer v3 dataset.
-# Usage: bash scripts/train/train_right_flap_only.sh [check|smoke|full] [steps] [batch-per-GPU] [save-frequency]
+# Usage: bash scripts/train/train_right_flap_only.sh [check|smoke|full] [steps] [batch-per-GPU] [save-frequency] [num-gpus]
 set -Eeuo pipefail
+
+# Editable run configuration. A zero step count keeps the data-exposure-matched default.
+TRAINING_STEPS="${TRAINING_STEPS:-0}"
+TRAINING_NUM_GPUS="${TRAINING_NUM_GPUS:-4}"
+TRAINING_BATCH_SIZE="${TRAINING_BATCH_SIZE:-64}"
 
 MODE="${1:-full}"
 case "${MODE}" in
@@ -9,7 +14,7 @@ case "${MODE}" in
   smoke) DEFAULT_STEPS=2; DEFAULT_BATCH=1; DEFAULT_SAVE_FREQ=0 ;;
   full) DEFAULT_BATCH=64; DEFAULT_SAVE_FREQ=5000 ;;
   *)
-    echo "Usage: $0 [check|smoke|full] [steps] [batch-per-GPU] [save-frequency]" >&2
+    echo "Usage: $0 [check|smoke|full] [steps] [batch-per-GPU] [save-frequency] [num-gpus]" >&2
     exit 2
     ;;
 esac
@@ -45,11 +50,15 @@ MODEL_ROOT="${MODEL_ROOT:-/mnt/cfs/usr/jixiang/hf_models/pi05_base}"
 TOKENIZER_ROOT="${TOKENIZER_ROOT:-/mnt/cfs/usr/jixiang/hf_models/paligemma-3b-pt-224-tokenizer}"
 OUTPUT_BASE="${OUTPUT_BASE:-${PACKAGE_ROOT}/checkpoints/right-flap-only-rtc}"
 
-NUM_GPUS="${NUM_GPUS:-4}"
+NUM_GPUS="${5:-${TRAINING_NUM_GPUS:-${NUM_GPUS:-4}}}"
 NUM_WORKERS="${NUM_WORKERS:-1}"
 PREFETCH_FACTOR="${PREFETCH_FACTOR:-2}"
 GRAD_ACCUM_STEPS="${GRAD_ACCUM_STEPS:-1}"
-BATCH_SIZE="${3:-${BATCH_SIZE:-${DEFAULT_BATCH}}}"
+if [[ "${MODE}" == full ]]; then
+  BATCH_SIZE="${3:-${TRAINING_BATCH_SIZE:-${DEFAULT_BATCH}}}"
+else
+  BATCH_SIZE="${3:-${DEFAULT_BATCH}}"
+fi
 RTC_TRAIN_MAX_DELAY="${RTC_TRAIN_MAX_DELAY:-10}"
 CHUNK_SIZE="${CHUNK_SIZE:-50}"
 N_ACTION_STEPS="${N_ACTION_STEPS:-10}"
@@ -137,8 +146,10 @@ TASK_SAMPLE_BUDGET=$((REFERENCE_SAMPLES * SELECTED_FRAMES / DATASET_FRAMES))
 GLOBAL_BATCH_SIZE=$((BATCH_SIZE * NUM_GPUS * GRAD_ACCUM_STEPS))
 MATCHED_STEPS=$(((TASK_SAMPLE_BUDGET + GLOBAL_BATCH_SIZE / 2) / GLOBAL_BATCH_SIZE))
 if [[ "${MODE}" == "full" ]]; then
-  DEFAULT_STEPS="${MATCHED_STEPS}"
-  [[ "${STEPS:-}" == "" ]] || DEFAULT_STEPS="${STEPS}"
+  DEFAULT_STEPS="${TRAINING_STEPS}"
+  if (( DEFAULT_STEPS == 0 )); then
+    DEFAULT_STEPS="${MATCHED_STEPS}"
+  fi
 fi
 STEPS="${2:-${DEFAULT_STEPS:-${STEPS:-0}}}"
 

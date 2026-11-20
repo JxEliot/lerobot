@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # Train PI05 from the base model on the merged multi-task dataset.
-# Usage: bash scripts/train/train_multitask_full_v1.sh [check|smoke|full] [steps] [batch-per-GPU] [save-frequency]
+# Usage: bash scripts/train/train_multitask_full_v1.sh [check|smoke|full] [steps] [batch-per-GPU] [save-frequency] [num-gpus]
 set -Eeuo pipefail
+
+# Editable run configuration. Command-line arguments override these values.
+TRAINING_STEPS="${TRAINING_STEPS:-60000}"
+TRAINING_NUM_GPUS="${TRAINING_NUM_GPUS:-4}"
+TRAINING_BATCH_SIZE="${TRAINING_BATCH_SIZE:-64}"
+export TRAINING_STEPS TRAINING_NUM_GPUS TRAINING_BATCH_SIZE
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PACKAGE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"

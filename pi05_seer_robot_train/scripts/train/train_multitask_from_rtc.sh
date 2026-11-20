@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # Continue full fine-tuning from the existing trained-RTC weights on every merged episode.
-# Usage: bash scripts/train/train_multitask_from_rtc.sh [check|smoke|full] [steps] [batch-per-GPU] [save-frequency]
+# Usage: bash scripts/train/train_multitask_from_rtc.sh [check|smoke|full] [steps] [batch-per-GPU] [save-frequency] [num-gpus]
 set -Eeuo pipefail
+
+# Editable run configuration. Command-line arguments override these values.
+TRAINING_STEPS="${TRAINING_STEPS:-60000}"
+TRAINING_NUM_GPUS="${TRAINING_NUM_GPUS:-4}"
+TRAINING_BATCH_SIZE="${TRAINING_BATCH_SIZE:-64}"
+export TRAINING_STEPS TRAINING_NUM_GPUS TRAINING_BATCH_SIZE
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PACKAGE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"

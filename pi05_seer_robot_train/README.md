@@ -47,13 +47,14 @@ needed. `ENV_FILE` remains available for dataset and training settings.
 
 ```bash
 cd /mnt/cfs/usr/jixiang/vla_learning/lerobot
-ENV_FILE=pi05_seer_robot_train/config/server.env bash pi05_seer_robot_train/scripts/train/train.sh full 60000 8
-ENV_FILE=pi05_seer_robot_train/config/server.env bash pi05_seer_robot_train/scripts/train/train_rtc.sh full 60000 8
+ENV_FILE=pi05_seer_robot_train/config/server.env bash pi05_seer_robot_train/scripts/train/train.sh full
+ENV_FILE=pi05_seer_robot_train/config/server.env bash pi05_seer_robot_train/scripts/train/train_rtc.sh full
 ```
 
-Both scripts accept `[check|smoke|full] [steps] [batch-per-GPU] [save-frequency]`. `check` validates
-dataset metadata, local model/tokenizer assets, GPU count, and bfloat16 support. `smoke` runs two
-optimizer steps. `full` defaults to 10,000 steps and batch size 64 per GPU. It saves a checkpoint
+Both scripts accept `[check|smoke|full] [steps] [batch-per-GPU] [save-frequency] [num-gpus]`. Their
+editable configuration blocks default to 60,000 steps, 4 GPUs, and batch size 64 per GPU. `check`
+validates dataset metadata, local model/tokenizer assets, GPU count, and bfloat16 support. `smoke`
+runs two optimizer steps with batch size 1 per GPU. `full` saves a checkpoint
 every 5,000 steps by default, as well as at the final step. Set `SAVE_FREQ` in `config/server.env`
 to change the interval; `SAVE_FREQ=0` disables periodic saves. Checkpoints are kept under the run's
 `checkpoints/` directory, and `checkpoints/last` points to the newest completed save. No old
@@ -66,11 +67,13 @@ the RTC prefix range.
 
 Both scripts fully fine-tune the vision encoder and action expert (`freeze_vision_encoder=false`,
 `train_expert_only=false`, `use_peft=false`). Training settings can be overridden with environment
-variables, including `BATCH_SIZE`, `NUM_GPUS`, `GRAD_ACCUM_STEPS`, `STEPS`, `SAVE_FREQ`, `CHUNK_SIZE`,
+variables, including `GRAD_ACCUM_STEPS`, `SAVE_FREQ`, `CHUNK_SIZE`,
 `N_ACTION_STEPS`, `RTC_TRAIN_MAX_DELAY`, `OPTIMIZER_LR`, `SCHEDULER_WARMUP_STEPS`,
 `SCHEDULER_DECAY_STEPS`, `SCHEDULER_DECAY_LR`, `LOG_FREQ`, `EVAL_STEPS`, `EVAL_SPLIT`,
-`NUM_WORKERS`, and `IMAGE_AUGMENTATION`. The four positional arguments override mode, steps, batch per
-GPU, and save frequency. `OUTPUT_BASE` and `OUTPUT_DIR` control checkpoint locations.
+`NUM_WORKERS`, and `IMAGE_AUGMENTATION`. The positional arguments override mode, steps, batch per
+GPU, save frequency, and GPU count. The generic `run.sh` defaults to 10,000 steps and one GPU when invoked
+directly; recipe launchers override these with their top-of-file configuration. `OUTPUT_BASE` and
+`OUTPUT_DIR` control checkpoint locations.
 
 ## Multi-task training and MLflow
 
@@ -81,8 +84,8 @@ Both use RTC action-prefix conditioning (`RTC_TRAIN_MAX_DELAY=10` by default) an
 metrics to MLflow every `LOG_FREQ` steps. There is no held-out evaluation loss in these runs.
 
 ```bash
-ENV_FILE=pi05_seer_robot_train/config/server.env bash pi05_seer_robot_train/scripts/train/train_multitask_full.sh full 60000 64
-ENV_FILE=pi05_seer_robot_train/config/server.env bash pi05_seer_robot_train/scripts/train/train_multitask_from_rtc.sh full 60000 64
+ENV_FILE=pi05_seer_robot_train/config/server.env bash pi05_seer_robot_train/scripts/train/train_multitask_full.sh full
+ENV_FILE=pi05_seer_robot_train/config/server.env bash pi05_seer_robot_train/scripts/train/train_multitask_from_rtc.sh full
 ```
 
 MLflow logging requires `mlflow>=3.0,<4` in `/root/venvs/lerobot-pi05` on the training server. Training
