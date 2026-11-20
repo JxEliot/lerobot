@@ -185,7 +185,8 @@ responsible for connecting the service to the arm controller.
 
 ## Resume
 
-Use the checkpoint's `train_config.json` with the standard LeRobot resume flow, for example:
+The low-level LeRobot resume command is shown below. For recovery with the checkpoint's saved GPU
+topology and configured save interval, use the dedicated launcher described after it:
 
 ```bash
 torchrun --standalone --nproc-per-node=1 pi05_seer_robot_train/train.py \
