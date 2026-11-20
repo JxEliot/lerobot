@@ -19,7 +19,7 @@ def test_mlflow_logger_writes_metrics_to_configured_server(monkeypatch):
 
     def start_run(**kwargs):
         assert kwargs["experiment_id"] == experiment.experiment_id
-        assert kwargs["run_name"].startswith("test-job.")
+        assert kwargs["run_name"].startswith("test.test-job.")
         assert kwargs["tags"]["team"] == "robotics"
         return run
 
