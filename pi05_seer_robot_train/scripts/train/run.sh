@@ -12,12 +12,22 @@ case "${MODE}" in
     ;;
 esac
 
-PACKAGE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PACKAGE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 REPOSITORY_ROOT="$(cd "${PACKAGE_ROOT}/.." && pwd)"
 if [[ -n "${ENV_FILE:-}" ]]; then
   [[ -f "${ENV_FILE}" ]] || { echo "Environment file not found: ${ENV_FILE}" >&2; exit 1; }
+  set -a
   # shellcheck source=/dev/null
   source "${ENV_FILE}"
+  set +a
+fi
+MLFLOW_CREDS_FILE="${MLFLOW_CREDS_FILE:-${PACKAGE_ROOT}/config/.mlflow.env}"
+if [[ -f "${MLFLOW_CREDS_FILE}" ]]; then
+  set -a
+  # shellcheck source=/dev/null
+  source "${MLFLOW_CREDS_FILE}"
+  set +a
 fi
 
 STEPS="${2:-${STEPS:-${DEFAULT_STEPS}}}"
@@ -32,7 +42,7 @@ MODEL_ROOT="${MODEL_ROOT:-/mnt/cfs/usr/jixiang/hf_models/pi05_base}"
 TOKENIZER_ROOT="${TOKENIZER_ROOT:-/mnt/cfs/usr/jixiang/hf_models/paligemma-3b-pt-224-tokenizer}"
 OUTPUT_BASE="${OUTPUT_BASE:-${PACKAGE_ROOT}/checkpoints}"
 DATASET_REPO_ID="${DATASET_REPO_ID:-seer_robot/lerobot_ee}"
-NUM_GPUS="${NUM_GPUS:-4}"
+NUM_GPUS="${NUM_GPUS:-1}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
 GRAD_ACCUM_STEPS="${GRAD_ACCUM_STEPS:-1}"
 N_ACTION_STEPS="${N_ACTION_STEPS:-10}"
@@ -51,7 +61,9 @@ LOG_FREQ="${LOG_FREQ:-200}"
 EVAL_STEPS="${EVAL_STEPS:-0}"
 EVAL_SPLIT="${EVAL_SPLIT:-0.05}"
 IMAGE_AUGMENTATION="${IMAGE_AUGMENTATION:-true}"
-TRACKIO_ENABLE="${TRACKIO_ENABLE:-false}"
+MLFLOW_ENABLE="${MLFLOW_ENABLE:-true}"
+MLFLOW_EXPERIMENT_NAME="${MLFLOW_EXPERIMENT_NAME:-seer-pi05-eef}"
+MLFLOW_RUN_NAME_PREFIX="${MLFLOW_RUN_NAME_PREFIX:-seer-pi05}"
 JOB_NAME="${JOB_NAME:-seer-pi05-${TRAINING_PROFILE}-${MODE}}"
 KEEP_CHECKPOINTS="${KEEP_CHECKPOINTS:-2}"
 IMAGE_TRANSFORMS='{"brightness":{"weight":1.0,"type":"ColorJitter","kwargs":{"brightness":[0.9,1.1]}},"contrast":{"weight":1.0,"type":"ColorJitter","kwargs":{"contrast":[0.9,1.1]}},"sharpness":{"weight":1.0,"type":"SharpnessJitter","kwargs":{"sharpness":[0.8,1.2]}}}'
@@ -65,6 +77,7 @@ export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
 export TOKENIZERS_PARALLELISM=false
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
+export MLFLOW_ENABLE MLFLOW_EXPERIMENT_NAME MLFLOW_RUN_NAME_PREFIX
 
 fail() {
   echo "ERROR: $*" >&2
@@ -79,6 +92,9 @@ fail() {
 [[ "${RTC_TRAIN_MAX_DELAY}" =~ ^(0|[1-9][0-9]*)$ ]] || fail "RTC_TRAIN_MAX_DELAY must be a non-negative integer"
 (( N_ACTION_STEPS <= CHUNK_SIZE )) || fail "N_ACTION_STEPS cannot exceed CHUNK_SIZE"
 (( RTC_TRAIN_MAX_DELAY < CHUNK_SIZE )) || fail "RTC_TRAIN_MAX_DELAY must be smaller than CHUNK_SIZE"
+if [[ "${MLFLOW_ENABLE,,}" =~ ^(1|true|yes)$ ]]; then
+  [[ -n "${MLFLOW_TRACKING_URI:-}" ]] || fail "Set MLFLOW_TRACKING_URI to the official MLflow tracking server"
+fi
 if [[ "${TRAINING_PROFILE}" == rtc ]] && (( RTC_TRAIN_MAX_DELAY == 0 )); then
   fail "RTC_TRAIN_MAX_DELAY must be greater than zero for train_rtc.sh"
 fi
@@ -112,7 +128,7 @@ echo "  steps: ${STEPS}; chunk=${CHUNK_SIZE}; action steps=${N_ACTION_STEPS}; RT
 echo "  optimizer LR: ${OPTIMIZER_LR}; full fine-tuning: vision encoder and action expert unfrozen"
 echo "  image augmentation: ${IMAGE_AUGMENTATION} (brightness, contrast, sharpness)"
 
-read -r LOGGER_FIELD IMAGE_BACKEND_SUPPORTED < <(
+read -r TRACKIO_CONFIG_SUPPORTED IMAGE_BACKEND_SUPPORTED < <(
   "${PYTHON_BIN}" - <<'PY'
 from dataclasses import fields
 
@@ -120,16 +136,13 @@ from lerobot.configs.train import TrainPipelineConfig
 from lerobot.transforms import ImageTransformsConfig
 
 config_fields = {field.name for field in fields(TrainPipelineConfig)}
-logger_field = "trackio" if "trackio" in config_fields else "wandb" if "wandb" in config_fields else None
-if logger_field is None:
-    raise RuntimeError("LeRobot training config has no supported experiment logger")
 image_fields = {field.name for field in fields(ImageTransformsConfig)}
-print(logger_field, int("backend" in image_fields))
+print(int("trackio" in config_fields), int("backend" in image_fields))
 PY
 )
-logger_args=("--${LOGGER_FIELD}.enable=${TRACKIO_ENABLE}" "--${LOGGER_FIELD}.project=seer-pi05-eef")
-if [[ "${LOGGER_FIELD}" == wandb ]]; then
-  logger_args+=(--wandb.disable_artifact=true)
+logger_args=()
+if [[ "${TRACKIO_CONFIG_SUPPORTED}" == 1 ]]; then
+  logger_args+=(--trackio.enable=false)
 fi
 image_backend_args=()
 if [[ "${IMAGE_BACKEND_SUPPORTED}" == 1 ]]; then

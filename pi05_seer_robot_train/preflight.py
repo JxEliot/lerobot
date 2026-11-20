@@ -43,11 +43,31 @@ def main() -> None:
             import mlflow
         except ImportError as error:
             raise SystemExit("MLflow logging is enabled but mlflow is not installed in this environment") from error
-        if not os.environ.get("MLFLOW_TRACKING_URI"):
-            raise SystemExit("MLFLOW_TRACKING_URI must be set when MLFLOW_ENABLE=true")
-        if not os.environ.get("MLFLOW_ARTIFACT_ROOT"):
-            raise SystemExit("MLFLOW_ARTIFACT_ROOT must be set when MLFLOW_ENABLE=true")
-        print(f"MLflow: {mlflow.__version__}, tracking URI configured")
+        tracking_uri = os.environ.get("MLFLOW_TRACKING_URI")
+        if not tracking_uri:
+            raise SystemExit("MLFLOW_TRACKING_URI must point to the official tracking server")
+        experiment_id = os.environ.get("MLFLOW_EXPERIMENT_ID")
+        experiment_name = os.environ.get("MLFLOW_EXPERIMENT_NAME")
+        fallback_id = os.environ.get("MLFLOW_FALLBACK_EXPERIMENT_ID")
+        if not experiment_id and not experiment_name:
+            raise SystemExit("Set MLFLOW_EXPERIMENT_NAME or MLFLOW_EXPERIMENT_ID")
+        try:
+            mlflow.set_tracking_uri(tracking_uri)
+            client = mlflow.MlflowClient()
+            if experiment_id:
+                experiment = client.get_experiment(experiment_id)
+                if experiment is None:
+                    raise ValueError(f"MLflow experiment id does not exist: {experiment_id}")
+            else:
+                experiment = client.get_experiment_by_name(experiment_name)
+                if experiment is None and fallback_id:
+                    experiment = client.get_experiment(fallback_id)
+                    if experiment is None:
+                        raise ValueError(f"MLFLOW_FALLBACK_EXPERIMENT_ID does not exist: {fallback_id}")
+        except Exception as error:
+            raise SystemExit(f"Cannot access the configured MLflow server or experiment: {error}") from error
+        resolved_name = experiment.name if experiment is not None else experiment_name
+        print(f"MLflow: {mlflow.__version__}, server reachable, experiment={resolved_name}")
 
     if not (args.model_root / "config.json").is_file():
         raise SystemExit(f"PI05 config not found: {args.model_root / 'config.json'}")

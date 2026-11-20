@@ -12,6 +12,8 @@ from pi05_seer_robot_train.seer_pi05.data import (
     compute_training_stats,
 )
 
+pytestmark = pytest.mark.dataset
+
 
 def test_video_safe_prefix_uses_torchcodec_frame_index_rounding():
     timestamps = [frame / 20 for frame in range(331)]
@@ -88,6 +90,32 @@ def test_dataset_view_maps_filtered_rows_and_supports_python_indexing():
         absolute_to_relative_idx=view.absolute_to_relative_idx,
     )
     assert list(sampler) == [0, 1, 2]
+
+
+def test_dataset_view_sampler_excludes_unselected_appended_episodes():
+    from lerobot.datasets.sampler import EpisodeAwareSampler
+
+    dataset = SimpleNamespace(
+        episodes=None,
+        absolute_to_relative_idx=None,
+        meta=SimpleNamespace(
+            episodes={
+                "dataset_from_index": [0, 3, 5],
+                "dataset_to_index": [3, 5, 8],
+            }
+        ),
+    )
+    view = SeerDatasetView(dataset, valid_indices=[0, 1, 3], valid_lengths={0: 2, 1: 1})
+    sampler = EpisodeAwareSampler(
+        view.meta.episodes["dataset_from_index"],
+        view.meta.episodes["dataset_to_index"],
+        episode_indices_to_use=view.episodes,
+        shuffle=True,
+        absolute_to_relative_idx=view.absolute_to_relative_idx,
+    )
+
+    assert len(sampler) == len(view) == 3
+    assert sorted(sampler) == [0, 1, 2]
 
 
 def test_training_stats_keep_future_actions_for_valid_video_samples(tmp_path):

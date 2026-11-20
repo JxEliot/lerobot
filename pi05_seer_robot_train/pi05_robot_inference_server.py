@@ -11,6 +11,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
@@ -57,6 +58,12 @@ class Request(BaseModel):
     images: dict[str, str]
     rtc_options: dict | None = None
     pi05_rtc: dict | None = None
+
+
+def _rtc_context_for_task(rtc: dict[str, Any], task_changed: bool) -> dict[str, Any]:
+    if not task_changed:
+        return rtc
+    return {**rtc, "inference_delay": 0, "prev_chunk_left_over": None}
 
 
 def _load_policy_config(checkpoint: str, device: str):
@@ -218,6 +225,18 @@ class PI05Server:
         print(f"[checkpoint] {json.dumps(self.server_info)}", flush=True)
         self.lock = threading.Lock()
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pi05-inference")
+        self.last_task: str | None = None
+
+    def _reset_for_task(self, task: str) -> bool:
+        """Reset stateful inference components when the request task changes."""
+        task_changed = task != self.last_task
+        if task_changed:
+            print(f"[task] resetting inference context: {self.last_task!r} -> {task!r}", flush=True)
+            self.policy.reset()
+            self.pre.reset()
+            self.post.reset()
+            self.policy.init_rtc_processor()
+        return task_changed
 
     def warmup(self, steps: int = 3) -> None:
         """Exercise the real request path on the inference worker before listening."""
@@ -338,11 +357,13 @@ class PI05Server:
             "observation.images.left_wrist": images["left_wrist_image"],
             "observation.images.right_wrist": images["right_wrist_image"],
         }
-        obs = prepare_observation_for_inference(obs, self.device, task=req.task, robot_type="seer_dual_arm")
+        task = req.task.strip()
+        obs = prepare_observation_for_inference(obs, self.device, task=task, robot_type="seer_dual_arm")
         with self.lock, torch.no_grad():
+            task_changed = self._reset_for_task(task)
             preprocess_started = time.perf_counter()
             processed = self.pre(obs)
-            rtc = req.pi05_rtc or {}
+            rtc = _rtc_context_for_task(req.pi05_rtc or {}, task_changed)
             rtc_enabled = bool(rtc.get("enabled", False))
             if rtc_enabled and self.rtc_mode == "off":
                 raise ValueError("server mode=off cannot accept RTC requests")
@@ -416,6 +437,7 @@ class PI05Server:
             )
         if not np.isfinite(actions).all():
             raise ValueError("policy returned non-finite actions")
+        self.last_task = task
         names = [
             "left_ee_pose_target.x", "left_ee_pose_target.y", "left_ee_pose_target.z",
             "left_ee_pose_target.rx", "left_ee_pose_target.ry", "left_ee_pose_target.rz",
@@ -438,6 +460,9 @@ class PI05Server:
                 "total": (time.perf_counter() - received_at) * 1000,
             },
             "status": "ok",
+            "task": task,
+            "task_changed": task_changed,
+            "reset_action_queue": task_changed,
             "action": action_chunk[0],
             "action_chunk": action_chunk,
             "action_horizon": len(action_chunk),
@@ -445,7 +470,7 @@ class PI05Server:
             "rtc_supported": bool((req.pi05_rtc or {}).get("enabled", False)),
             "rtc_action_chunk": rtc_action_chunk.tolist(),
             "rtc_mode": self.rtc_mode,
-            "rtc_inference_delay": int((req.pi05_rtc or {}).get("inference_delay", 0)),
+            "rtc_inference_delay": rtc_delay,
         }
 
 

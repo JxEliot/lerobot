@@ -15,7 +15,7 @@
 # limitations under the License.
 """Train a policy.
 
-Requires: pip install 'lerobot[training]'  (includes dataset + accelerate + trackio extras)
+Requires: pip install 'lerobot[training]' and `mlflow>=3.0` when MLflow logging is enabled.
 
 Launch with torchrun for distributed runs; every parallelism/acceleration knob lives on the
 config (`--parallelism.*`, `--accelerator.*`) so a run is reproducible from its
@@ -30,6 +30,7 @@ torchrun --nproc-per-node=8 $(which lerobot-train) \
 
 import dataclasses
 import logging
+import os
 import sys
 import time
 from collections.abc import Iterator
@@ -46,7 +47,6 @@ from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 from tqdm import tqdm
 
-from lerobot.common.trackio_utils import TrackioLogger
 from lerobot.common.train_utils import (
     get_step_checkpoint_dir,
     get_step_identifier,
@@ -564,11 +564,17 @@ def train(cfg: TrainPipelineConfig) -> None:
     if is_main_process():
         logging.info(pformat(cfg.to_dict()))
 
-    if cfg.trackio.enable and cfg.trackio.project and is_main_process():
-        trackio_logger = TrackioLogger(cfg)
-    else:
-        trackio_logger = None
-        if is_main_process():
+    training_logger = None
+    if is_main_process():
+        if os.environ.get("MLFLOW_ENABLE", "false").lower() in {"1", "true", "yes"}:
+            from lerobot.common.mlflow_utils import MLflowLogger
+
+            training_logger = MLflowLogger(cfg)
+        elif cfg.trackio.enable and cfg.trackio.project:
+            from lerobot.common.trackio_utils import TrackioLogger
+
+            training_logger = TrackioLogger(cfg)
+        else:
             logging.info(colored("Logs will be saved locally.", "yellow", attrs=["bold"]))
 
     if cfg.seed is not None:
@@ -892,7 +898,7 @@ def train(cfg: TrainPipelineConfig) -> None:
                 if train_tracker.step_s.avg > 0:
                     train_tracker.samples_per_s = samples_per_step / train_tracker.step_s.avg
                 logging.info(train_tracker)
-                if trackio_logger:
+                if training_logger:
                     # Policy sub-losses (latent_loss, action_loss, ...) are aggregated into the
                     # tracker by update_policy, so to_dict() already carries their windowed,
                     # rank-reduced averages — no per-step output_dict passthrough needed.
@@ -904,7 +910,7 @@ def train(cfg: TrainPipelineConfig) -> None:
                     if ema is not None and ema.decay is not None:
                         metrics_to_log["ema/decay"] = ema.decay
                         metrics_to_log["ema/step"] = ema.num_updates
-                    trackio_logger.log_dict(metrics_to_log, step)
+                    training_logger.log_dict(metrics_to_log, step)
             train_tracker.reset_averages()
 
         if is_eval_step and eval_dataloader is not None:
@@ -926,8 +932,8 @@ def train(cfg: TrainPipelineConfig) -> None:
 
             if is_main_process():
                 logging.info(f"step {step}: eval_loss={eval_loss:.4f}")
-                if trackio_logger:
-                    trackio_logger.log_dict({"eval_loss": eval_loss}, step=step, mode="eval")
+                if training_logger:
+                    training_logger.log_dict({"eval_loss": eval_loss}, step=step, mode="eval")
 
         if cfg.save_checkpoint and is_saving_step:
             # Collective: every rank participates (gathers / DCP shard writes); rank-0-only file
@@ -958,8 +964,8 @@ def train(cfg: TrainPipelineConfig) -> None:
                         cfg.policy.repo_id,
                         private=cfg.policy.private,
                     )
-                if trackio_logger:
-                    trackio_logger.log_policy(checkpoint_dir)
+                if training_logger:
+                    training_logger.log_policy(checkpoint_dir)
             accelerator.wait_for_everyone()
 
         if cfg.env and is_env_eval_step:
@@ -1013,10 +1019,10 @@ def train(cfg: TrainPipelineConfig) -> None:
                 eval_tracker.eval_s = aggregated.pop("eval_s")
                 eval_tracker.avg_sum_reward = aggregated.pop("avg_sum_reward")
                 eval_tracker.pc_success = aggregated.pop("pc_success")
-                if trackio_logger:
+                if training_logger:
                     metrics_to_log = {**eval_tracker.to_dict(), **eval_info}
-                    trackio_logger.log_dict(metrics_to_log, step, mode="eval")
-                    trackio_logger.log_video(eval_info["overall"]["video_paths"][0], step, mode="eval")
+                    training_logger.log_dict(metrics_to_log, step, mode="eval")
+                    training_logger.log_video(eval_info["overall"]["video_paths"][0], step, mode="eval")
 
             accelerator.wait_for_everyone()
 
@@ -1038,8 +1044,8 @@ def train(cfg: TrainPipelineConfig) -> None:
             ema=ema,
         )
 
-    if trackio_logger:
-        trackio_logger.finish()
+    if training_logger:
+        training_logger.finish()
 
     # Properly clean up the distributed process group
     accelerator.wait_for_everyone()

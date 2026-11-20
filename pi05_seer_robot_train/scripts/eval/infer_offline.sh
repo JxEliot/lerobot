@@ -2,7 +2,8 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPOSITORY_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PACKAGE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+REPOSITORY_ROOT="$(cd "${PACKAGE_ROOT}/.." && pwd)"
 
 if [[ -n "${ENV_FILE:-}" ]]; then
   [[ -f "${ENV_FILE}" ]] || { echo "Environment file not found: ${ENV_FILE}" >&2; exit 1; }
@@ -29,4 +30,4 @@ export HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}"
 export PYTHONPATH="${LEROBOT_ROOT}/src:${REPOSITORY_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 export TOKENIZERS_PARALLELISM=false
 
-exec "${PYTHON_BIN}" "${SCRIPT_DIR}/infer_offline.py" "$@"
+exec "${PYTHON_BIN}" "${PACKAGE_ROOT}/infer_offline.py" "$@"

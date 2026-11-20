@@ -258,6 +258,9 @@ class SeerDatasetView(Dataset):
         self._dataset = dataset
         self._valid_indices = list(range(len(dataset))) if valid_indices is None else valid_indices
         self.meta = _SafeDatasetMetadata(dataset.meta, valid_lengths)
+        # The episode table can contain newly appended rows beyond the recorded dataset
+        # totals. Sampling must stay within the episodes inspected for this filtered view.
+        self.episodes = list(valid_lengths) if valid_lengths is not None else dataset.episodes
 
         source_mapping = dataset.absolute_to_relative_idx
         relative_to_absolute = (

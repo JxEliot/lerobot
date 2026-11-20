@@ -2,7 +2,8 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+PACKAGE_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
+REPO_ROOT="$(cd -- "${PACKAGE_ROOT}/.." && pwd)"
 
 if [[ -n "${ENV_FILE:-}" ]]; then
   [[ -f "${ENV_FILE}" ]] || { echo "Environment file not found: ${ENV_FILE}" >&2; exit 1; }
@@ -13,8 +14,7 @@ fi
 VENV_ROOT="${VENV_ROOT:-/root/venvs/lerobot-pi05}"
 PYTHON_BIN="${PYTHON_BIN:-${VENV_ROOT}/bin/python}"
 LEROBOT_ROOT="${LEROBOT_ROOT:-${REPO_ROOT}}"
-RTC_CHECKPOINT="${SCRIPT_DIR}/checkpoints/rtc/full-20261103-185442/checkpoints/010000/pretrained_model"
-# RTC_CHECKPOINT="${SCRIPT_DIR}/checkpoints/multitask-full-rtc/full-20261105-155455/checkpoints/010000/pretrained_model"
+RTC_CHECKPOINT="${PACKAGE_ROOT}/checkpoints/rtc/full-20261103-185442/checkpoints/010000/pretrained_model"
 CHECKPOINT="${CHECKPOINT:-${RTC_CHECKPOINT}}"
 RTC_MODE="${RTC_MODE:-trained}"
 HOST="${HOST:-0.0.0.0}"
@@ -38,7 +38,7 @@ export HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}"
 export PYTHONPATH="${LEROBOT_ROOT}/src:${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 export TOKENIZERS_PARALLELISM=false
 
-exec "${PYTHON_BIN}" "${SCRIPT_DIR}/pi05_robot_inference_server.py" \
+exec "${PYTHON_BIN}" "${PACKAGE_ROOT}/pi05_robot_inference_server.py" \
   --rtc-mode "${RTC_MODE}" \
   --checkpoint "${CHECKPOINT}" \
   --host "${HOST}" \

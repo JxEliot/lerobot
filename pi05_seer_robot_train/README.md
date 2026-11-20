@@ -5,6 +5,21 @@ This folder contains an isolated training entry point for the LeRobot v3 dataset
 training loop; the adapter only handles the Seer vector schema, normalization statistics,
 and end-effector action representation.
 
+## Script entry points
+
+Shell launchers are grouped by purpose under `scripts/`. See the [中文脚本索引](scripts/README.md)
+for the purpose of every launcher and commands to run on the server.
+
+| Directory | Purpose |
+|---|---|
+| `scripts/train/` | Full fine-tuning, RTC, multi-task and single-task training; shared `run.sh` |
+| `scripts/inference/` | Real-robot inference servers: trained RTC, guided RTC, no RTC and multi-task |
+| `scripts/eval/` | Offline inference and trajectory comparison |
+
+The former root-level shell paths have moved to these directories. Update saved launch commands
+and DLC job commands accordingly. Python entry points, `config/`, `checkpoints/` and
+`inference_results/` stay at the package root.
+
 ## Dataset mapping
 
 The expected v3 dataset has 120 episodes, 20 FPS, and three cameras (`head`, `left_wrist`,
@@ -31,14 +46,14 @@ environment at `/root/venvs/lerobot-pi05`; override `VENV_ROOT`, `PYTHON_BIN`, o
 needed. `ENV_FILE` remains available for dataset and training settings.
 
 ```bash
-cd /mnt/cfs/usr/jixiang/vla_learning/lerobot_pi05_train
-bash pi05_seer_robot_train/train.sh full 10000 8 0
-bash pi05_seer_robot_train/train_rtc.sh full 10000 8 0
+cd /mnt/cfs/usr/jixiang/vla_learning/lerobot
+ENV_FILE=pi05_seer_robot_train/config/server.env bash pi05_seer_robot_train/scripts/train/train.sh full 10000 8 0
+ENV_FILE=pi05_seer_robot_train/config/server.env bash pi05_seer_robot_train/scripts/train/train_rtc.sh full 10000 8 0
 ```
 
 Both scripts accept `[check|smoke|full] [steps] [batch-per-GPU] [save-frequency]`. `check` validates
 dataset metadata, local model/tokenizer assets, GPU count, and bfloat16 support. `smoke` runs two
-optimizer steps. `full` defaults to 10,000 steps, batch size 8 per GPU, and saves the final checkpoint
+optimizer steps. `full` defaults to 10,000 steps, batch size 64 per GPU, and saves the final checkpoint
 only. A periodic checkpoint interval can be passed as the fourth argument or through `SAVE_FREQ`.
 Full PI05 checkpoints require substantial disk space.
 
@@ -64,22 +79,27 @@ Both use RTC action-prefix conditioning (`RTC_TRAIN_MAX_DELAY=10` by default) an
 metrics to MLflow every `LOG_FREQ` steps. There is no held-out evaluation loss in these runs.
 
 ```bash
-NUM_GPUS=2 bash pi05_seer_robot_train/train_multitask_full.sh full 10000 64 0
-NUM_GPUS=2 bash pi05_seer_robot_train/train_multitask_from_rtc.sh full 10000 64 0
+ENV_FILE=pi05_seer_robot_train/config/server.env bash pi05_seer_robot_train/scripts/train/train_multitask_full.sh full 10000 64 0
+ENV_FILE=pi05_seer_robot_train/config/server.env bash pi05_seer_robot_train/scripts/train/train_multitask_from_rtc.sh full 10000 64 0
 ```
 
-On the server, install `requirements-mlflow.txt` into `/root/venvs/lerobot-pi05` before running
-either launcher. The default experiment is `seer-pi05-multitask`; the SQLite store and artifacts
-live under `/mnt/cfs/usr/jixiang/vla_learning/mlflow/pi05_seer_robot_train`. MLflow records loss,
-gradient norm, learning rate, throughput, timing, and GPU memory, plus the training configuration
-for comparing runs. MLflow does not store or manage model checkpoints; those remain in the normal
-checkpoint folder.
-Set `MLFLOW_HOME`, `MLFLOW_TRACKING_URI`, `MLFLOW_ARTIFACT_ROOT`, or `MLFLOW_EXPERIMENT_NAME` to
-override these defaults.
+MLflow logging requires `mlflow>=3.0,<4` in `/root/venvs/lerobot-pi05` on the training server. Training
+uses the tested CleanRL server at `https://mlflow.seer-robotics.cn` and its existing experiment
+`openpi/pi05` (ID `20`). The server URL and experiment settings are in
+`pi05_seer_robot_train/config/server.env`. Credentials are copied from CleanRL's ignored
+`configs/.mlflow.env` to `pi05_seer_robot_train/config/.mlflow.env`; launchers load that file
+automatically. Both private files are ignored by Git. Pass the settings file with
+`ENV_FILE=pi05_seer_robot_train/config/server.env`.
 
-To open the dashboard, start `bash pi05_seer_robot_train/mlflow_ui.sh` on the server, then forward
-the server's local port with `ssh -p 5850 -L 5000:127.0.0.1:5000 root@106.12.144.208` and open
-`http://127.0.0.1:5000` in a browser. Change `MLFLOW_PORT` when port 5000 is in use.
+The private server config pins experiment ID `20`, `openpi/pi05`, matching the tested CleanRL setup;
+the launch preflight checks that the configured server and experiment are reachable before starting
+distributed workers. Each run gets a unique name from the job name and timestamp;
+`MLFLOW_RUN_NAME` can set an explicit name, and `MLFLOW_TAGS` accepts comma-separated `key=value` tags.
+
+MLflow records loss, gradient norm, learning rate, throughput, timing, GPU memory, and training
+configuration. It does not store or manage model checkpoints; those remain in the normal checkpoint
+folder. The former CFS SQLite store is no longer used by new runs, and the official server's UI is
+opened directly at its configured URL.
 
 Visual augmentation is photometric only: brightness and contrast vary from 0.9 to 1.1, sharpness
 from 0.8 to 1.2, with up to two transforms per image. It does not alter camera geometry.
@@ -92,11 +112,11 @@ to a robot or simulator. The default checks up to 100 frames per episode; set
 `--max-frames-per-episode 0` to process every valid frame.
 
 ```bash
-bash pi05_seer_robot_train/infer_offline.sh \
+bash pi05_seer_robot_train/scripts/eval/infer_offline.sh \
   pi05_seer_robot_train/checkpoints/rtc/full-20261103-185442 \
   --max-frames-per-episode 100
 
-bash pi05_seer_robot_train/infer_offline.sh \
+bash pi05_seer_robot_train/scripts/eval/infer_offline.sh \
   pi05_seer_robot_train/checkpoints/no-rtc/full-20261103-185856 \
   --max-frames-per-episode 100
 ```
@@ -112,7 +132,7 @@ inspect training and held-out episodes together, or `--episodes` with comma-sepa
 to select episodes directly. For this dataset the valid indices are `0` through `119`; for example:
 
 ```bash
-bash pi05_seer_robot_train/infer_offline.sh \
+bash pi05_seer_robot_train/scripts/eval/infer_offline.sh \
   pi05_seer_robot_train/checkpoints/no-rtc/full-20261103-185856 \
   --episodes 114 \
   --max-frames-per-episode 0 \
@@ -132,15 +152,15 @@ pair, and returns absolute XYZ+rotation-vector targets in `action_chunk`.
 Start one server on the GPU host:
 
 ```bash
-bash pi05_seer_robot_train/run_pi05_inference_server.sh
+bash pi05_seer_robot_train/scripts/inference/run_pi05_inference_server.sh
 ```
 
 That script defaults to the trained-RTC checkpoint and RTC mode `trained`. The alternate launchers
 select `guided` RTC or plain inference:
 
 ```bash
-bash pi05_seer_robot_train/run_pi05_inference_server_guided.sh
-bash pi05_seer_robot_train/run_pi05_inference_server_no_rtc.sh
+bash pi05_seer_robot_train/scripts/inference/run_pi05_inference_server_guided.sh
+bash pi05_seer_robot_train/scripts/inference/run_pi05_inference_server_no_rtc.sh
 ```
 
 The service listens on `0.0.0.0:18080`; the robot controller should use
@@ -150,6 +170,12 @@ For trained RTC, the client must pass the previous absolute action chunk, measur
 `inference_delay`, and the matching `execution_horizon` in `pi05_rtc`. Defaults are a 25-step
 execution horizon for trained RTC and 15 for guided RTC. Override `CHECKPOINT`, `PORT`,
 `EXECUTION_HORIZON`, `WARMUP_STEPS`, or other launcher settings through the environment or `ENV_FILE`.
+
+The server detects task changes from each request's `task` field. On the first request for a task,
+it resets policy and processor state and ignores any supplied RTC prefix (`inference_delay=0`). Its
+response sets `reset_action_queue=true`; the robot-side client must clear already buffered actions
+before executing the returned chunk. Subsequent requests for the same task may continue RTC using the
+new task's action chunks.
 
 The server validates checkpoint processors and warms up with a synthetic request before opening
 the HTTP listener. It does not connect to or command the robot; the existing robot-side client remains
@@ -182,5 +208,8 @@ checkpoint by adding:
 - `seer_pi05/data.py`: v3 dataset wrapper and train-split statistics.
 - `seer_pi05/processors.py`: serializable PI05 preprocessing and postprocessing steps.
 - `train.py`: thin hook into the stock `lerobot-train` loop.
-- `preflight.py`, `run.sh`, `config/`: server launch and validation.
+- `preflight.py`, `config/`: server configuration and validation.
+- `scripts/train/`: training launchers and shared `run.sh`.
+- `scripts/inference/`: real-robot inference launchers.
+- `scripts/eval/`: offline validation launcher.
 - `tests/`: vector conversion and episode-boundary checks.
